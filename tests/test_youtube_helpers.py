@@ -95,6 +95,32 @@ def test_video_id_from_url_fast_watch_no_yt_dlp(
     assert video_id_from_url(url) == "abcDEF123"
 
 
+def test_video_id_from_url_shorts_path_no_yt_dlp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ensure fast-path handles shorts form without spawning yt-dlp."""
+
+    def fail_run(*_args: object, **_kwargs: object) -> NoReturn:
+        msg = "yt-dlp should not be called for fast-path"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+    assert video_id_from_url("https://www.youtube.com/shorts/SHORT_ID") == "SHORT_ID"
+
+
+def test_video_id_from_url_live_path_no_yt_dlp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ensure fast-path handles live form without spawning yt-dlp."""
+
+    def fail_run(*_args: object, **_kwargs: object) -> NoReturn:
+        msg = "yt-dlp should not be called for fast-path"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+    assert video_id_from_url("https://www.youtube.com/live/LIVE_ID") == "LIVE_ID"
+
+
 def test_channel_key_from_url_variants() -> None:
     """Extract proper channel key from different channel URL formats."""
     assert channel_key_from_url("https://www.youtube.com/@Handle") == "Handle"
@@ -132,10 +158,11 @@ def test_filter_pending_urls(tmp_path: Path) -> None:
     (foo_dir / "ID_C.txt").write_bytes(b"")
 
     filtered, total = filter_pending_urls(per_channel, transcripts_dir)
-    expected_total = 1
+    expected_total = 2
     assert total == expected_total
     assert set(filtered[ch]) == {
         "https://www.youtube.com/watch?v=ID_B",
+        "https://www.youtube.com/shorts/ID_C",
     }
 
 
@@ -191,11 +218,11 @@ def test_download_and_read_subtitles_success_vtt(
 
 
 def test_is_supported_video_url_matrix() -> None:
-    """Only standard videos are supported."""
+    """Support standard videos, shorts, and live streams; exclude embed/clip."""
     assert is_supported_video_url("https://www.youtube.com/watch?v=ID") is True
     assert is_supported_video_url("https://youtu.be/ID") is True
-    assert is_supported_video_url("https://www.youtube.com/live/ID") is False
-    assert is_supported_video_url("https://www.youtube.com/shorts/ID") is False
+    assert is_supported_video_url("https://www.youtube.com/shorts/ID") is True
+    assert is_supported_video_url("https://www.youtube.com/live/ID") is True
     assert is_supported_video_url("https://www.youtube.com/embed/ID") is False
     assert is_supported_video_url("https://www.youtube.com/clip/ID") is False
     assert is_supported_video_url("ID") is True

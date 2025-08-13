@@ -83,7 +83,11 @@ def _build_proxy_url() -> str | None:
 def _extract_id_from_parsed(parsed: _up.ParseResult) -> str | None:
     """Extract video ID from a parsed YouTube URL if possible.
 
-    Supports youtu.be/<id> and youtube.com/watch?v=<id>.
+    Supports:
+    - youtu.be/<id>
+    - youtube.com/watch?v=<id>
+    - youtube.com/shorts/<id>
+    - youtube.com/live/<id>
     Returns None when not extractable.
     """
     host = parsed.netloc
@@ -95,6 +99,9 @@ def _extract_id_from_parsed(parsed: _up.ParseResult) -> str | None:
         vid = qs.get("v", [""])[0]
         if vid:
             return vid
+        parts = [p for p in parsed.path.split("/") if p]
+        if parts and parts[0] in {"shorts", "live"} and len(parts) > 1:
+            return parts[1]
     return None
 
 
@@ -140,14 +147,15 @@ def video_id_from_url(url_or_id: str) -> str:
 
 
 def is_supported_video_url(url: str) -> bool:
-    """Return True for standard YouTube video URLs, False otherwise.
+    """Return True for supported YouTube URLs, False otherwise.
 
     Supported forms:
     - https://youtu.be/<id>
     - https://www.youtube.com/watch?v=<id>
+    - https://www.youtube.com/shorts/<id>
+    - https://www.youtube.com/live/<id>
 
-    Explicitly excluded: shorts, clip, embed, live, and other non-standard forms.
-    Raw IDs (no URL) are considered supported.
+    Explicitly excluded: embed and clip forms. Raw IDs (no URL) are supported.
     """
     if "youtube.com" not in url and "youtu.be" not in url:
         # If looks like a URL but not YouTube, reject; else treat as raw ID
@@ -158,8 +166,10 @@ def is_supported_video_url(url: str) -> bool:
         return True
     if host.endswith("youtube.com"):
         qs = _up.parse_qs(parsed.query)
-        # Only watch URLs with 'v' query param are supported.
-        return bool(qs.get("v", [""])[0])
+        if qs.get("v", [""])[0]:
+            return True
+        parts = [p for p in parsed.path.split("/") if p]
+        return bool(parts and parts[0] in {"shorts", "live"} and len(parts) > 1)
     return False
 
 
@@ -177,7 +187,7 @@ def filter_pending_urls(
         ch_key = channel_key_from_url(ch)
         pending: list[str] = []
         for url in urls:
-            # Skip unsupported content types (shorts, clip, embed, etc.)
+            # Skip unsupported content types (embed, clip, etc.)
             if not is_supported_video_url(url):
                 continue
             vid = video_id_from_url(url)

@@ -7,7 +7,7 @@ Features (parity with CLI):
 - View downloaded YouTubers and transcript counts
 - Show download progress and allow chatting while downloading (background thread)
 Progress updates from a background thread do not automatically rerun the
-Streamlit script; enable auto-refresh below to see live progress.
+Streamlit script.
 
 """
 
@@ -275,7 +275,7 @@ def _handle_download_start_button() -> None:
 
 
 def _render_progress_widgets() -> None:
-    """Show progress bar and optional auto-refresh while running."""
+    """Show progress bar and a running info message while downloading."""
     total = st.session_state.download_total
     done = st.session_state.download_done
     running = st.session_state.download_running
@@ -283,16 +283,6 @@ def _render_progress_widgets() -> None:
     st.progress(progress, text=f"Progresso: {done}/{total}")
     if running:
         st.info("Baixando... você pode usar o chat ao lado enquanto isso.")
-        auto = st.checkbox(
-            "Auto-atualizar progresso",
-            value=True,
-            key="auto_refresh_main",
-            help=("Quando ativo, a página se atualiza a cada segundo enquanto baixa."),
-        )
-        if auto:
-            with st.spinner("Atualizando progresso..."):
-                time.sleep(1.0)
-            st.rerun()
 
 
 def _render_completion_and_details() -> None:

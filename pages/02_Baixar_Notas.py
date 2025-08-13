@@ -189,7 +189,7 @@ def _maybe_start_download() -> None:
 
 
 def _render_progress_section() -> None:
-    """Render progress UI and auto-refresh logic."""
+    """Render progress UI (no auto-refresh)."""
     ss = st.session_state
     total = ss.download_total
     done = ss.download_done
@@ -197,16 +197,7 @@ def _render_progress_section() -> None:
     progress = 0.0 if total == 0 else min(1.0, done / max(1, total))
     st.progress(progress, text=f"Progresso: {done}/{total}")
     if running:
-        auto = st.checkbox(
-            "Auto-atualizar progresso",
-            value=True,
-            key="auto_refresh_download_page",
-            help="Quando ativo, a página se atualiza a cada segundo enquanto baixa.",
-        )
-        if auto:
-            with st.spinner("Atualizando progresso..."):
-                time.sleep(1.0)
-            st.rerun()
+        st.info("Baixando... você pode usar o chat ao lado enquanto isso.")
     if total > 0 and not running and done >= total:
         st.success("Download concluído.")
 
