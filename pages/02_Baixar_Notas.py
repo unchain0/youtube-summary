@@ -32,8 +32,6 @@ def _ensure_state() -> None:
     ss.setdefault("channels_input", "")
     # Progress
     ss.setdefault("download_running", False)
-    ss.setdefault("download_total", 0)
-    ss.setdefault("download_done", 0)
     ss.setdefault("download_errors", [])
     ss.setdefault("download_last", "")
     ss.setdefault("download_saved", [])
@@ -52,8 +50,6 @@ def _download_worker(
     ss.download_errors = []
     ss.download_saved = []
     ss.download_last = ""
-    ss.download_total = 0
-    ss.download_done = 0
 
     download_errors = []
     download_saved = []
@@ -74,13 +70,11 @@ def _download_worker(
         download_errors.append(f"Falha ao listar vídeos: {e}")
 
     # Filter out URLs that already have transcripts persisted
-    per_channel_urls, total_pending = filter_pending_urls(
+    per_channel_urls, _ = filter_pending_urls(
         per_channel_urls,
         transcripts_dir,
     )
 
-    ss.download_total = total_pending
-    ss.download_done = 0
     ss.download_errors = download_errors
 
     for ch, urls in per_channel_urls.items():
@@ -100,7 +94,6 @@ def _download_worker(
             except Exception as e:  # noqa: BLE001
                 download_errors.append(f"{url}: {e}")
             finally:
-                ss.download_done += 1
                 ss.download_last = download_last
                 ss.download_saved = download_saved
                 ss.download_errors = download_errors
@@ -123,7 +116,7 @@ def _render_sidebar_nav() -> None:
 def _render_title_and_caption() -> None:
     """Render title and caption for the page."""
     st.title("Baixar notas (transcrições)")
-    st.caption("O progresso é mostrado abaixo; você pode ir ao Chat enquanto baixa.")
+    st.caption("Você pode ir ao Chat enquanto baixa.")
 
 
 def _render_inputs() -> None:
@@ -188,18 +181,11 @@ def _maybe_start_download() -> None:
     st.success("Download iniciado. Acompanhe o progresso abaixo.")
 
 
-def _render_progress_section() -> None:
-    """Render progress UI (no auto-refresh)."""
+def _render_status_notice() -> None:
+    """Render a simple status notice without progress bar."""
     ss = st.session_state
-    total = ss.download_total
-    done = ss.download_done
-    running = ss.download_running
-    progress = 0.0 if total == 0 else min(1.0, done / max(1, total))
-    st.progress(progress, text=f"Progresso: {done}/{total}")
-    if running:
+    if ss.download_running:
         st.info("Baixando... você pode usar o chat ao lado enquanto isso.")
-    if total > 0 and not running and done >= total:
-        st.success("Download concluído.")
 
 
 def _render_results_section() -> None:
@@ -237,7 +223,7 @@ def main() -> None:
     _render_title_and_caption()
     _render_inputs()
     _maybe_start_download()
-    _render_progress_section()
+    _render_status_notice()
     _render_results_section()
 
 

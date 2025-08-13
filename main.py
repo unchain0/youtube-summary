@@ -44,8 +44,6 @@ def _ensure_state() -> None:
     ss.setdefault("groq_model", "")  # empty -> use env/default inside RAG
     # Download progress state
     ss.setdefault("download_running", False)
-    ss.setdefault("download_total", 0)
-    ss.setdefault("download_done", 0)
     ss.setdefault("download_errors", [])
     ss.setdefault("download_last", "")
     ss.setdefault("download_saved", [])
@@ -77,11 +75,11 @@ def _download_worker(
     limit: int | None,
     subs_fallback: bool,
 ) -> None:
-    """Background download worker that updates session_state for progress.
+    """Background download worker that updates session_state.
 
     Notes:
     - Avoids using Streamlit APIs directly inside the thread; only session_state.
-    - Pre-fetches video URL lists for accurate progress totals.
+    - Pre-fetches video URL lists.
 
     """
     ss = st.session_state
@@ -91,24 +89,21 @@ def _download_worker(
     ss.download_last = ""
     yt = YouTubeTranscriptManager(base_dir=str(transcripts_dir))
 
-    # Pre-compute URL lists per channel for accurate totals
+    # Pre-compute URL lists per channel
     per_channel_urls: dict[str, list[str]] = {}
-    total = 0
     try:
         for ch in channels:
             urls = yt.get_video_urls_from_channel(ch)
             if limit is not None:
                 urls = urls[: int(limit)]
             per_channel_urls[ch] = urls
-            total += len(urls)
     except Exception as e:  # noqa: BLE001
         ss.download_errors.append(f"Falha ao listar vídeos: {e}")
     # Filter out URLs that already have transcripts persisted
-    per_channel_urls, total_pending = filter_pending_urls(
-        per_channel_urls, transcripts_dir,
+    per_channel_urls, _ = filter_pending_urls(
+        per_channel_urls,
+        transcripts_dir,
     )
-    ss.download_total = total_pending
-    ss.download_done = 0
 
     # Download loop
     for ch, urls in per_channel_urls.items():
@@ -128,7 +123,6 @@ def _download_worker(
             except Exception as e:  # noqa: BLE001
                 ss.download_errors.append(f"{url}: {e}")
             finally:
-                ss.download_done += 1
                 # Gentle pace to keep UI responsive and avoid rate issues
                 time.sleep(0.05)
 
@@ -274,24 +268,11 @@ def _handle_download_start_button() -> None:
     st.success("Download iniciado. Acompanhe o progresso abaixo.")
 
 
-def _render_progress_widgets() -> None:
-    """Show progress bar and a running info message while downloading."""
-    total = st.session_state.download_total
-    done = st.session_state.download_done
-    running = st.session_state.download_running
-    progress = 0.0 if total == 0 else min(1.0, done / max(1, total))
-    st.progress(progress, text=f"Progresso: {done}/{total}")
-    if running:
-        st.info("Baixando... você pode usar o chat ao lado enquanto isso.")
-
-
 def _render_completion_and_details() -> None:
     """Show completion message, last processed item, errors and saved files."""
-    total = st.session_state.download_total
-    done = st.session_state.download_done
     running = st.session_state.download_running
-    if total > 0 and not running and done >= total:
-        st.success("Download concluído.")
+    if running:
+        st.info("Baixando... você pode usar o chat ao lado enquanto isso.")
     if st.session_state.download_last:
         st.caption(f"Último vídeo processado: {st.session_state.download_last}")
     if st.session_state.download_errors:
@@ -310,7 +291,6 @@ def _render_download_section(col_left: DeltaGenerator) -> None:
         st.subheader("Baixar notas (transcrições)")
         _download_text_input()
         _handle_download_start_button()
-        _render_progress_widgets()
         _render_completion_and_details()
 
 

@@ -55,13 +55,11 @@ class _Snippet(Protocol):
 class _FetchedTranscriptProtocol(Protocol):
     """Protocol for FetchedTranscript-like objects."""
 
-    def to_raw_data(self) -> list[Entry]:
-        ...
+    def to_raw_data(self) -> list[Entry]: ...
 
 
 class _IterableSnippets(Protocol, Iterable[_Snippet]):
     """Protocol for iterables yielding snippet-like objects."""
-
 
 
 class _UseSubsFallbackError(Exception):
@@ -78,8 +76,7 @@ class _HasFetch(Protocol):
     def fetch(
         self,
         preserve_formatting: bool = ...,  # noqa: FBT001
-    ) -> list[Entry] | _FetchedTranscriptProtocol | _IterableSnippets:
-        ...
+    ) -> list[Entry] | _FetchedTranscriptProtocol | _IterableSnippets: ...
 
 
 class _HasFinders(Protocol, Iterable[Any]):
@@ -123,11 +120,13 @@ class YouTubeTranscriptManager:
         app_tmp = Path("data/tmp")
         app_tmp.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
-        env.update({
-            "TMP": str(app_tmp),
-            "TEMP": str(app_tmp),
-            "TMPDIR": str(app_tmp),
-        })
+        env.update(
+            {
+                "TMP": str(app_tmp),
+                "TEMP": str(app_tmp),
+                "TMPDIR": str(app_tmp),
+            },
+        )
         try:
             result = subprocess.run(  # noqa: S603
                 command,
@@ -422,10 +421,15 @@ class YouTubeTranscriptManager:
         channel_dir = self.base_dir / channel_key
         channel_dir.mkdir(parents=True, exist_ok=True)
         out_path = channel_dir / f"{video_id}.txt"
+        channel_name = out_path.parent.name
 
         # Skip if the transcript file already exists and is non-empty.
         if out_path.exists() and out_path.stat().st_size > 0:
-            logger.info("Skipping existing transcript {} -> {}", video_id, out_path)
+            logger.info(
+                "Skipping existing transcript {} from channel {}",
+                video_id,
+                channel_name,
+            )
             return out_path
 
         text = self.fetch_transcript(
@@ -439,7 +443,11 @@ class YouTubeTranscriptManager:
             raise RuntimeError(msg)
         with out_path.open("w", encoding="utf-8") as f:
             f.write(text)
-        logger.success("Transcribed video {} -> {}", video_id, out_path)
+        logger.success(
+            "Transcribed video {} from channel {}",
+            video_id,
+            channel_name,
+        )
         return out_path
 
     def process_channel(
