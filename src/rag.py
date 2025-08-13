@@ -13,9 +13,6 @@ from langchain_together.embeddings import TogetherEmbeddings
 
 from .utils.logging_setup import logger
 
-# Back-compat for tests that monkeypatch FastEmbedEmbeddings
-FastEmbedEmbeddings = TogetherEmbeddings
-
 
 class TranscriptRAG:
     """Build a vector store from transcript files and provide QA.
@@ -52,8 +49,8 @@ class TranscriptRAG:
             "TOGETHER_EMBEDDINGS_MODEL",
             "intfloat/multilingual-e5-large-instruct",
         )
-        # Instantiate via alias so tests can monkeypatch FastEmbedEmbeddings
-        self.embeddings = FastEmbedEmbeddings(model=self._embed_model_name)
+        # Instantiate Together embeddings
+        self.embeddings = TogetherEmbeddings(model=self._embed_model_name)
         safe_model = self._embed_model_name.replace("-", "_").replace("/", "_")
         self.collection_name = f"transcripts_together_{safe_model}"
         self.db: Chroma | None = None
