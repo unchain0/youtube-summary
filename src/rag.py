@@ -9,20 +9,7 @@ from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
-
-try:  # pragma: no cover - optional dependency surface
-    from langchain_community.embeddings.fastembed import (  # type: ignore[import-not-found]
-        FastEmbedEmbeddings,
-    )
-except ImportError:  # pragma: no cover - allow tests to monkeypatch attribute
-
-    class FastEmbedEmbeddings:  # type: ignore[too-many-ancestors]
-        """Fallback stub for FastEmbedEmbeddings when package is unavailable."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the fallback embedding stub (no-op)."""
-            del args, kwargs
-            # Acts as a placeholder; tests will monkeypatch this class.
+from langchain_together.embeddings import TogetherEmbeddings
 
 from .utils.logging_setup import logger
 
@@ -58,11 +45,10 @@ class TranscriptRAG:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
-        provider = "fastembed"
-        model_name = os.getenv("FASTEMBED_MODEL", "BAAI/bge-small-en-v1.5")
-        self.embeddings = FastEmbedEmbeddings(model_name=model_name)
-        safe_model = model_name.replace("-", "_").replace("/", "_")
-        self.collection_name = f"transcripts_{provider}_{safe_model}"
+        self._embed_model_name = "intfloat/multilingual-e5-large-instruct"
+        self.embeddings = TogetherEmbeddings(model=self._embed_model_name)
+        safe_model = self._embed_model_name.replace("-", "_").replace("/", "_")
+        self.collection_name = f"transcripts_together_{safe_model}"
         self.db: Chroma | None = None
         self.groq_model_name: str = groq_model or os.getenv(
             "GROQ_MODEL",
@@ -71,6 +57,44 @@ class TranscriptRAG:
         self.model: ChatGroq | None = None
         # Root directory for transcripts to compute stable relative paths
         self.transcripts_root: Path | None = None
+
+    def configure_resources(self, max_threads: int | None = None) -> None:
+        """Configure CPU usage for embedding/indexing operations.
+
+        Sets common numeric backend env vars (e.g., OpenMP/BLAS) to limit
+        parallelism and reinitializes the embedding function so the change
+        takes effect before heavy work.
+
+        Args:
+            max_threads: Maximum threads to use (>=1). If None, do nothing.
+
+        """
+        if not max_threads:
+            return
+        # Clamp to sane bounds
+        threads = max(1, int(max_threads))
+        for var in (
+            "OMP_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+            "BLIS_NUM_THREADS",
+        ):
+            os.environ[var] = str(threads)
+        # Avoid tokenizer parallelism spikes when applicable
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+        # Recreate embeddings to ensure new env takes effect
+        try:
+            self.embeddings = TogetherEmbeddings(model=self._embed_model_name)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Failed to reinitialize embeddings after resource config: {}: {}",
+                type(e).__name__,
+                e,
+            )
+        # Ensure future DB instances pick up the new embedding function
+        self.db = None
 
     def _ensure_model(self) -> ChatGroq:
         if self.model is None:
@@ -267,4 +291,7 @@ class TranscriptRAG:
         llm = self._ensure_model()
         retriever = db.as_retriever(search_kwargs={"k": k})
         qa = RetrievalQA.from_chain_type(llm, chain_type="stuff", retriever=retriever)
-        return qa.run(question)
+        result = qa.invoke({"query": question})
+        if isinstance(result, dict) and "result" in result:
+            return str(result["result"])
+        return str(result)
