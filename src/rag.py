@@ -2,6 +2,8 @@
 
 import hashlib
 import os
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 from langchain.chains import RetrievalQA
@@ -28,6 +30,7 @@ class TranscriptRAG:
         vector_dir: str | Path = "data/vector_store",
         chunk_size: int = 1500,
         chunk_overlap: int = 150,
+        embed_model_name: str | None = None,
         groq_model: str | None = None,
     ) -> None:
         """Initialize RAG components.
@@ -36,7 +39,8 @@ class TranscriptRAG:
             vector_dir: Directory where the Chroma DB will persist.
             chunk_size: Max characters per chunk for splitting.
             chunk_overlap: Overlap between adjacent chunks.
-            groq_model: Optional Groq model name; defaults to env or a sensible default.
+            embed_model_name: Optional Together embeddings model name; overrides env.
+            groq_model: Optional Groq model name; overrides env.
 
         """
         self.vector_dir = Path(vector_dir)
@@ -45,7 +49,7 @@ class TranscriptRAG:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
-        self._embed_model_name = os.getenv(
+        self._embed_model_name = embed_model_name or os.getenv(
             "TOGETHER_EMBEDDINGS_MODEL",
             "intfloat/multilingual-e5-large-instruct",
         )
@@ -180,13 +184,35 @@ class TranscriptRAG:
             docs.append(Document(page_content=text, metadata={"source": rel}))
         return docs
 
-    def index_transcripts(self, transcripts_dir: str | Path) -> None:
-        """Build or rebuild the vector store from transcript .txt files."""
-        # Load existing transcript docs
+    def index_transcripts(
+        self,
+        transcripts_dir: str | Path,
+        on_progress: Callable[[int, int, str], None] | None = None,
+    ) -> dict[str, int | float]:
+        """Build or rebuild the vector store from transcript .txt files.
+
+        If ``on_progress`` is provided, it will be called as
+        ``on_progress(current_file_index, total_files, relative_path)`` after each
+        file is processed.
+
+        Returns a summary dict with keys: ``files``, ``added``, ``skipped``,
+        ``duration_s``.
+        """
+        start = time.perf_counter()
         self.transcripts_root = Path(transcripts_dir)
-        docs = self._docs_from_transcripts(transcripts_dir)
-        if not docs:
-            # No transcripts: initialize empty store and persist
+        base = self.transcripts_root
+        files = list(base.rglob("*.txt"))
+        total = len(files)
+
+        logger.info(
+            "Indexing started. files={}, model={}, collection={}",
+            total,
+            self._embed_model_name,
+            self.collection_name,
+        )
+
+        if total == 0:
+            # Initialize empty store and persist
             self.db = Chroma(
                 embedding_function=self.embeddings,
                 persist_directory=str(self.vector_dir),
@@ -201,24 +227,103 @@ class TranscriptRAG:
                         type(e).__name__,
                         e,
                     )
-            return
-        # Non-empty transcripts: create docs using our stable relative source
-        chunks = self.text_splitter.split_documents(docs)
-        # Ensure DB exists, then add chunks with deterministic IDs to avoid duplicates
+            elapsed = time.perf_counter() - start
+            logger.info(
+                "Indexing finished. files=0 added=0 skipped=0 time={:.2f}s",
+                elapsed,
+            )
+            return {"files": 0, "added": 0, "skipped": 0, "duration_s": elapsed}
+
+        # Ensure DB exists once
         self.db = Chroma(
             embedding_function=self.embeddings,
             persist_directory=str(self.vector_dir),
             collection_name=self.collection_name,
         )
-        added, skipped = self._add_chunks_with_ids(chunks)
-        logger.info(
-            "Indexing completed. Added {} chunks, skipped {} already present.",
-            added,
-            skipped,
+
+        processed, added_total, skipped_total = self._index_files(
+            files,
+            base,
+            total,
+            on_progress,
         )
 
-    def add_channel(self, channel_transcripts_dir: str | Path) -> None:
-        """Incrementally add a channel's transcripts into the current vector store."""
+        # Persist at end
+        if hasattr(self.db, "persist"):
+            try:
+                self.db.persist()  # type: ignore[attr-defined]
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Chroma persist() failed: {}: {}", type(e).__name__, e)
+
+        elapsed = time.perf_counter() - start
+        logger.info(
+            "Indexing finished. files={} added={} skipped={} time={:.2f}s",
+            processed,
+            added_total,
+            skipped_total,
+            elapsed,
+        )
+        return {
+            "files": processed,
+            "added": added_total,
+            "skipped": skipped_total,
+            "duration_s": elapsed,
+        }
+
+    def _index_files(
+        self,
+        files: list[Path],
+        base: Path,
+        total: int,
+        on_progress: Callable[[int, int, str], None] | None,
+    ) -> tuple[int, int, int]:
+        """Index individual transcript files and return counters.
+
+        Returns (processed, added_total, skipped_total).
+        """
+        added_total = 0
+        skipped_total = 0
+        processed = 0
+        for fpath in files:
+            try:
+                text = fpath.read_text(encoding="utf-8").strip()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "Failed to read transcript {}: {}: {}",
+                    fpath,
+                    type(e).__name__,
+                    e,
+                )
+                processed += 1
+                if on_progress:
+                    rel = fpath.relative_to(base).as_posix()
+                    on_progress(processed, total, rel)
+                continue
+
+            if not text:
+                processed += 1
+                if on_progress:
+                    rel = fpath.relative_to(base).as_posix()
+                    on_progress(processed, total, rel)
+                continue
+
+            rel = fpath.relative_to(base).as_posix()
+            doc = Document(page_content=text, metadata={"source": rel})
+            chunks = self.text_splitter.split_documents([doc])
+            a, s = self._add_chunks_with_ids(chunks)
+            added_total += a
+            skipped_total += s
+            processed += 1
+            if on_progress:
+                on_progress(processed, total, rel)
+        return processed, added_total, skipped_total
+
+    def add_channel(self, channel_transcripts_dir: str | Path) -> tuple[int, int]:
+        """Incrementally add a channel's transcripts into the current vector store.
+
+        Returns a tuple (added, skipped).
+        """
+        t0 = time.perf_counter()
         if self.db is None:
             # Lazy init empty store if not present
             self.db = Chroma(
@@ -231,16 +336,60 @@ class TranscriptRAG:
             self.transcripts_root = Path(channel_transcripts_dir).parent
         docs = self._docs_from_transcripts(Path(channel_transcripts_dir))
         if not docs:
-            return
+            return (0, 0)
         chunks: list[Document] = []
         for doc in docs:
             chunks.extend(self.text_splitter.split_documents([doc]))
         added, skipped = self._add_chunks_with_ids(chunks)
         logger.info(
-            "Channel indexing completed. Added {} chunks, skipped {} already present.",
+            "Channel indexing completed. added={} skipped={} time={:.2f}s",
             added,
             skipped,
+            (time.perf_counter() - t0),
         )
+        return added, skipped
+
+    def remove_channel_from_index(self, channel_name: str) -> int:
+        """Remove all vectors for a given channel from the index.
+
+        Best effort: tries to find IDs matching metadata.source starting with
+        "channel_name/" and delete them. Returns count of IDs attempted to delete.
+        """
+        db = self._ensure_db()
+        # Try to fetch matching IDs using underlying collection when possible
+        ids_to_delete: list[str] = []
+        where = {"source": {"$contains": f"{channel_name}/"}}
+        collection = getattr(db, "_collection", None)
+        if collection is not None and hasattr(collection, "get"):
+            try:
+                result = collection.get(where=where)  # type: ignore[attr-defined]
+                got = result.get("ids") if isinstance(result, dict) else None
+                if got:
+                    ids_to_delete = list(got)
+            except Exception:  # noqa: BLE001
+                ids_to_delete = []
+        # If not collected, we still try a best-effort delete by where below
+        try:
+            # Prefer deleting by where if supported (will be ignored otherwise)
+            db.delete(where=where)  # type: ignore[arg-type]
+        except Exception as err:  # noqa: BLE001
+            # Fallback: delete by explicit ids if we managed to fetch any
+            if ids_to_delete:
+                try:
+                    db.delete(ids=ids_to_delete)  # type: ignore[arg-type]
+                except Exception as err2:  # noqa: BLE001
+                    logger.warning(
+                        "Delete by ids failed: {}: {}",
+                        type(err2).__name__,
+                        err2,
+                    )
+            else:
+                logger.warning(
+                    "Delete by where failed: {}: {}",
+                    type(err).__name__,
+                    err,
+                )
+        return len(ids_to_delete)
 
     def _ensure_db(self) -> Chroma:
         if self.db is None:
@@ -261,3 +410,38 @@ class TranscriptRAG:
         if isinstance(result, dict) and "result" in result:
             return str(result["result"])
         return str(result)
+
+    def query_with_sources(
+        self,
+        question: str,
+        k: int = 4,
+    ) -> tuple[str, list[Document]]:
+        """RAG QA returning both answer text and source documents.
+
+        Returns a tuple of (answer, source_documents).
+        """
+        db = self._ensure_db()
+        llm = self._ensure_model()
+        retriever = db.as_retriever(search_kwargs={"k": k})
+        qa = RetrievalQA.from_chain_type(
+            llm,
+            chain_type="stuff",
+            retriever=retriever,
+            return_source_documents=True,
+        )
+        result = qa.invoke({"query": question})
+        answer: str
+        sources: list[Document]
+        if isinstance(result, dict):
+            answer = str(result.get("result", ""))
+            sources = result.get("source_documents") or []  # type: ignore[assignment]
+        else:
+            answer = str(result)
+            sources = []
+        logger.info(
+            "Query done. k={} sources={} chars={}",
+            k,
+            len(sources),
+            len(answer),
+        )
+        return answer, sources

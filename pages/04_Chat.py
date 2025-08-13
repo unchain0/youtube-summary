@@ -5,6 +5,7 @@ UI language: Portuguese (pt-BR). Code/docstrings/logs in English.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import streamlit as st
@@ -19,12 +20,28 @@ def _ensure_state() -> None:
     ss.setdefault("rag", None)
     ss.setdefault("chat", [])  # list of {role, content}
     ss.setdefault("top_k", 4)
+    # Model selections shared with Indexação page
+    ss.setdefault(
+        "embed_model_name",
+        os.getenv(
+            "TOGETHER_EMBEDDINGS_MODEL",
+            "intfloat/multilingual-e5-large-instruct",
+        ),
+    )
+    ss.setdefault(
+        "groq_model_name",
+        os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+    )
 
 
 def _get_rag() -> TranscriptRAG:
     ss = st.session_state
     if ss.rag is None or not isinstance(ss.rag, TranscriptRAG):
-        ss.rag = TranscriptRAG(vector_dir=ss.vector_dir)
+        ss.rag = TranscriptRAG(
+            vector_dir=ss.vector_dir,
+            embed_model_name=ss.embed_model_name,
+            groq_model=ss.groq_model_name,
+        )
     return ss.rag
 
 
@@ -77,7 +94,7 @@ def main() -> None:
         with st.chat_message("assistant"):
             try:
                 with st.spinner("Consultando o índice e gerando resposta..."):
-                    answer = _get_rag().query(
+                    answer, sources = _get_rag().query_with_sources(
                         prompt.strip(), k=st.session_state.top_k,
                     )
             except Exception as e:  # noqa: BLE001
@@ -90,6 +107,16 @@ def main() -> None:
                 st.session_state.chat.append({"role": "assistant", "content": err})
             else:
                 st.markdown(answer)
+                with st.expander("Fontes consultadas", expanded=False):
+                    if sources:
+                        for i, doc in enumerate(sources, 1):
+                            meta = getattr(doc, "metadata", {})
+                            src = str(meta.get("source", "desconhecida"))
+                            snippet = str(getattr(doc, "page_content", ""))[:300]
+                            st.markdown(f"{i}. `{src}`")
+                            st.code(snippet)
+                    else:
+                        st.caption("Nenhuma fonte retornada pelo pipeline.")
                 st.caption("Concluído.")
                 st.session_state.chat.append({"role": "user", "content": prompt})
                 st.session_state.chat.append({"role": "assistant", "content": answer})
