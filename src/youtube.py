@@ -34,6 +34,9 @@ from .utils.youtube_helpers import (
     download_and_read_subtitles as _download_subs,
 )
 from .utils.youtube_helpers import (
+    is_supported_video_url as _is_supported,
+)
+from .utils.youtube_helpers import (
     video_id_from_url as _vid_from_url,
 )
 
@@ -159,10 +162,18 @@ class YouTubeTranscriptManager:
                 if avail in blocked:
                     logger.debug("Restricted video ({}): {}", avail, url)
                     continue
-                urls.append(url.strip())
+                url = url.strip()
+                if not _is_supported(url):
+                    logger.debug("Unsupported content skipped: {}", url)
+                    continue
+                urls.append(url)
             else:
                 # Fallback: only URL was printed; keep it
-                urls.append(line.strip())
+                url = line.strip()
+                if not _is_supported(url):
+                    logger.debug("Unsupported content skipped: {}", url)
+                    continue
+                urls.append(url)
         return urls
 
     # video ID extraction is provided by youtube_helpers.video_id_from_url
@@ -408,6 +419,15 @@ class YouTubeTranscriptManager:
         (e.g., handle or custom name).
         """
         video_id = _vid_from_url(url_or_id)
+        channel_dir = self.base_dir / channel_key
+        channel_dir.mkdir(parents=True, exist_ok=True)
+        out_path = channel_dir / f"{video_id}.txt"
+
+        # Skip if the transcript file already exists and is non-empty.
+        if out_path.exists() and out_path.stat().st_size > 0:
+            logger.info("Skipping existing transcript {} -> {}", video_id, out_path)
+            return out_path
+
         text = self.fetch_transcript(
             video_id,
             languages=languages,
@@ -417,9 +437,6 @@ class YouTubeTranscriptManager:
             # Treat empty content as a failure so callers can skip it
             msg = f"Empty transcript for video {video_id}"
             raise RuntimeError(msg)
-        channel_dir = self.base_dir / channel_key
-        channel_dir.mkdir(parents=True, exist_ok=True)
-        out_path = channel_dir / f"{video_id}.txt"
         with out_path.open("w", encoding="utf-8") as f:
             f.write(text)
         logger.success("Transcribed video {} -> {}", video_id, out_path)

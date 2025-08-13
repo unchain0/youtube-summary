@@ -34,11 +34,13 @@ def _run_yt_dlp(
     app_tmp = temp_dir or Path("data/tmp")
     app_tmp.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    env.update({
-        "TMP": str(app_tmp),
-        "TEMP": str(app_tmp),
-        "TMPDIR": str(app_tmp),
-    })
+    env.update(
+        {
+            "TMP": str(app_tmp),
+            "TEMP": str(app_tmp),
+            "TMPDIR": str(app_tmp),
+        },
+    )
     try:
         return subprocess.run(  # noqa: S603
             cmd,
@@ -78,19 +80,47 @@ def _build_proxy_url() -> str | None:
     return None
 
 
+def _extract_id_from_parsed(parsed: _up.ParseResult) -> str | None:
+    """Extract video ID from a parsed YouTube URL if possible.
+
+    Supports youtu.be/<id> and youtube.com/watch?v=<id>.
+    Returns None when not extractable.
+    """
+    host = parsed.netloc
+    if host.endswith("youtu.be"):
+        candidate = parsed.path.lstrip("/").split("/")[0]
+        return candidate or None
+    if host.endswith("youtube.com"):
+        qs = _up.parse_qs(parsed.query)
+        vid = qs.get("v", [""])[0]
+        if vid:
+            return vid
+    return None
+
+
+def channel_key_from_url(url: str) -> str:
+    """Return a filesystem-friendly channel key derived from a channel URL."""
+    return url.rstrip("/").split("/")[-1].lstrip("@") or "channel"
+
+
 def video_id_from_url(url_or_id: str) -> str:
     """Extract a YouTube video ID or return the input if already an ID.
 
-    Uses yt-dlp when available for robust extraction; falls back to URL parsing.
+    Fast-path: parse the URL to avoid spawning yt-dlp per video. Falls back to
+    yt-dlp only if heuristics fail.
     """
     if "youtube.com" in url_or_id or "youtu.be" in url_or_id:
+        parsed = _up.urlparse(url_or_id)
+        fast = _extract_id_from_parsed(parsed)
+        if fast:
+            return fast
+        # Fallback: robust extraction via yt-dlp as last resort
         try:
             proxy_url = _build_proxy_url()
             cmd = ["yt-dlp", "--get-id"]
             if proxy_url:
                 cmd += ["--proxy", proxy_url]
             cmd.append(url_or_id)
-            # Use wrapper that confines temp files and falls back for test doubles
             result = _run_yt_dlp(cmd)
             lines = result.stdout.strip().splitlines()
             vid = lines[0] if lines else ""
@@ -103,13 +133,66 @@ def video_id_from_url(url_or_id: str) -> str:
                 type(err).__name__,
                 err,
             )
-
-        parsed = _up.urlparse(url_or_id)
-        if parsed.netloc.endswith("youtu.be"):
-            return parsed.path.lstrip("/")
-        qs = _up.parse_qs(parsed.query)
-        return qs.get("v", [url_or_id])[0]
+        # Last fallback: return original input
+        return url_or_id
+    # Input is already an ID or a non-YouTube URL: return as-is
     return url_or_id
+
+
+def is_supported_video_url(url: str) -> bool:
+    """Return True for standard YouTube video URLs, False otherwise.
+
+    Supported forms:
+    - https://youtu.be/<id>
+    - https://www.youtube.com/watch?v=<id>
+
+    Explicitly excluded: shorts, clip, embed, live, and other non-standard forms.
+    Raw IDs (no URL) are considered supported.
+    """
+    if "youtube.com" not in url and "youtu.be" not in url:
+        # If looks like a URL but not YouTube, reject; else treat as raw ID
+        return not ("://" in url or url.startswith("www."))
+    parsed = _up.urlparse(url)
+    host = parsed.netloc
+    if host.endswith("youtu.be"):
+        return True
+    if host.endswith("youtube.com"):
+        qs = _up.parse_qs(parsed.query)
+        # Only watch URLs with 'v' query param are supported.
+        return bool(qs.get("v", [""])[0])
+    return False
+
+
+def filter_pending_urls(
+    per_channel_urls: dict[str, list[str]],
+    transcripts_dir: Path,
+) -> tuple[dict[str, list[str]], int]:
+    """Filter out URLs that already have non-empty transcripts saved.
+
+    Returns a tuple of (filtered_mapping, total_pending_count).
+    """
+    filtered: dict[str, list[str]] = {}
+    total_pending = 0
+    for ch, urls in per_channel_urls.items():
+        ch_key = channel_key_from_url(ch)
+        pending: list[str] = []
+        for url in urls:
+            # Skip unsupported content types (shorts, clip, embed, etc.)
+            if not is_supported_video_url(url):
+                continue
+            vid = video_id_from_url(url)
+            out_path = transcripts_dir / ch_key / f"{vid}.txt"
+            try:
+                if out_path.exists() and out_path.stat().st_size > 0:
+                    continue
+            except OSError:
+                # Keep pending on filesystem errors
+                pass
+            pending.append(url)
+        if pending:
+            filtered[ch] = pending
+            total_pending += len(pending)
+    return filtered, total_pending
 
 
 def _clean_caption_line(s: str) -> str:

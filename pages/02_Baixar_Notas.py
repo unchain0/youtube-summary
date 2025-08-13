@@ -8,34 +8,19 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable  # noqa: TC003
-from contextlib import redirect_stderr
-from functools import wraps
-from io import StringIO
 from pathlib import Path
-from typing import ParamSpec, TypeVar
 
 import streamlit as st
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
+from src.utils.youtube_helpers import channel_key_from_url, filter_pending_urls
 from src.youtube import YouTubeTranscriptManager
 
-T = TypeVar("T")
-P = ParamSpec("P")
 
-
-def suppress_stderr_decorator[T, P: ParamSpec](func: Callable[P, T]) -> Callable[P, T]:
-    """Decorador para suprimir mensagens de erro durante a execução de uma função.
-
-    Especialmente útil para suprimir avisos de 'missing ScriptRunContext' em threads.
-    """
-
-    @wraps(func)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        devnull = StringIO()
-        with redirect_stderr(devnull):
-            return func(*args, **kwargs)
-
-    return wrapper
+def _start_thread_with_streamlit_ctx(t: threading.Thread) -> None:
+    """Start a thread with Streamlit ScriptRunContext to avoid console warnings."""
+    add_script_run_ctx(t)
+    t.start()
 
 
 def _ensure_state() -> None:
@@ -54,11 +39,6 @@ def _ensure_state() -> None:
     ss.setdefault("download_saved", [])
 
 
-def _channel_key_from_url(url: str) -> str:
-    return url.rstrip("/").split("/")[-1].lstrip("@") or "channel"
-
-
-@suppress_stderr_decorator
 def _download_worker(
     channels: list[str],
     transcripts_dir: Path,
@@ -67,8 +47,6 @@ def _download_worker(
     *,
     subs_fallback: bool,
 ) -> None:
-    # Inicializar variáveis locais para evitar acesso constante ao st.session_state
-    # que causa os avisos de ScriptRunContext
     ss = st.session_state
     ss.download_running = True
     ss.download_errors = []
@@ -77,20 +55,16 @@ def _download_worker(
     ss.download_total = 0
     ss.download_done = 0
 
-    # Usar variáveis locais para minimizar acesso ao st.session_state
     download_errors = []
     download_saved = []
     download_last = ""
 
-    # O decorador já está suprimindo todos os avisos
     yt = YouTubeTranscriptManager(base_dir=str(transcripts_dir))
 
-    # Processar URLs dos canais
     per_channel_urls: dict[str, list[str]] = {}
     total = 0
     try:
         for ch in channels:
-            # O decorador já está suprimindo todos os avisos
             urls = yt.get_video_urls_from_channel(ch)
             if limit is not None:
                 urls = urls[: int(limit)]
@@ -99,19 +73,22 @@ def _download_worker(
     except Exception as e:  # noqa: BLE001
         download_errors.append(f"Falha ao listar vídeos: {e}")
 
-    # Atualizar o estado da sessão com os totais
-    ss.download_total = total
+    # Filter out URLs that already have transcripts persisted
+    per_channel_urls, total_pending = filter_pending_urls(
+        per_channel_urls,
+        transcripts_dir,
+    )
+
+    ss.download_total = total_pending
     ss.download_done = 0
     ss.download_errors = download_errors
 
-    # Processar cada URL
     for ch, urls in per_channel_urls.items():
-        channel_key = _channel_key_from_url(ch)
+        channel_key = channel_key_from_url(ch)
         for url in urls:
-            if not ss.download_running:  # Verificar flag de cancelamento
+            if not ss.download_running:
                 break
             try:
-                # O decorador já está suprimindo todos os avisos
                 out = yt.save_transcript(
                     channel_key,
                     url,
@@ -123,14 +100,12 @@ def _download_worker(
             except Exception as e:  # noqa: BLE001
                 download_errors.append(f"{url}: {e}")
             finally:
-                # Atualizar o estado da sessão após cada download
                 ss.download_done += 1
                 ss.download_last = download_last
                 ss.download_saved = download_saved
                 ss.download_errors = download_errors
                 time.sleep(0.05)
 
-    # Finalizar
     ss.download_running = False
 
 
@@ -208,7 +183,7 @@ def _maybe_start_download() -> None:
         daemon=True,
     )
     with st.spinner("Iniciando download em segundo plano..."):
-        t.start()
+        _start_thread_with_streamlit_ctx(t)
         time.sleep(0.2)
     st.success("Download iniciado. Acompanhe o progresso abaixo.")
 
@@ -231,8 +206,7 @@ def _render_progress_section() -> None:
         if auto:
             with st.spinner("Atualizando progresso..."):
                 time.sleep(1.0)
-            st.experimental_rerun()
-    # Completion message
+            st.rerun()
     if total > 0 and not running and done >= total:
         st.success("Download concluído.")
 

@@ -20,8 +20,10 @@ from typing import TYPE_CHECKING
 
 import streamlit as st
 from dotenv import load_dotenv
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 from src.rag import TranscriptRAG
+from src.utils.youtube_helpers import channel_key_from_url, filter_pending_urls
 from src.youtube import YouTubeTranscriptManager
 
 if TYPE_CHECKING:
@@ -52,9 +54,7 @@ def _ensure_state() -> None:
     ss.setdefault("top_k", 4)
 
 
-def _channel_key_from_url(url: str) -> str:
-    """Derive a filesystem-friendly channel key from a YouTube channel URL."""
-    return url.rstrip("/").split("/")[-1].lstrip("@") or "channel"
+# Removed local channel key helper; use utils.channel_key_from_url
 
 
 def _list_channels(transcripts_dir: Path) -> list[tuple[str, int]]:
@@ -103,12 +103,16 @@ def _download_worker(
             total += len(urls)
     except Exception as e:  # noqa: BLE001
         ss.download_errors.append(f"Falha ao listar vídeos: {e}")
-    ss.download_total = total
+    # Filter out URLs that already have transcripts persisted
+    per_channel_urls, total_pending = filter_pending_urls(
+        per_channel_urls, transcripts_dir,
+    )
+    ss.download_total = total_pending
     ss.download_done = 0
 
     # Download loop
     for ch, urls in per_channel_urls.items():
-        channel_key = _channel_key_from_url(ch)
+        channel_key = channel_key_from_url(ch)
         for url in urls:
             if not ss.download_running:
                 break  # allow cancellation in the future
@@ -137,6 +141,13 @@ def _get_rag() -> TranscriptRAG:
     if ss.rag is None or not isinstance(ss.rag, TranscriptRAG):
         ss.rag = TranscriptRAG(vector_dir=ss.vector_dir)
     return ss.rag
+
+
+# Attach Streamlit run context to a thread when available, then start it.
+def _start_thread_with_streamlit_ctx(t: threading.Thread) -> None:
+    """Start a thread with Streamlit ScriptRunContext to avoid console warnings."""
+    add_script_run_ctx(t)
+    t.start()
 
 
 # ------------------------------- UI Definition -------------------------------
@@ -258,7 +269,7 @@ def _handle_download_start_button() -> None:
         daemon=True,
     )
     with st.spinner("Iniciando download em segundo plano..."):
-        t.start()
+        _start_thread_with_streamlit_ctx(t)
         time.sleep(0.2)
     st.success("Download iniciado. Acompanhe o progresso abaixo.")
 
@@ -281,7 +292,7 @@ def _render_progress_widgets() -> None:
         if auto:
             with st.spinner("Atualizando progresso..."):
                 time.sleep(1.0)
-            st.experimental_rerun()
+            st.rerun()
 
 
 def _render_completion_and_details() -> None:

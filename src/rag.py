@@ -9,7 +9,20 @@ from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
-from langchain_together import TogetherEmbeddings
+
+try:  # pragma: no cover - optional dependency surface
+    from langchain_community.embeddings.fastembed import (  # type: ignore[import-not-found]
+        FastEmbedEmbeddings,
+    )
+except ImportError:  # pragma: no cover - allow tests to monkeypatch attribute
+
+    class FastEmbedEmbeddings:  # type: ignore[too-many-ancestors]
+        """Fallback stub for FastEmbedEmbeddings when package is unavailable."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            """Initialize the fallback embedding stub (no-op)."""
+            del args, kwargs
+            # Acts as a placeholder; tests will monkeypatch this class.
 
 from .utils.logging_setup import logger
 
@@ -17,7 +30,8 @@ from .utils.logging_setup import logger
 class TranscriptRAG:
     """Build a vector store from transcript files and provide QA.
 
-    - Embeddings: Together AI (Multilingual E5 Large Instruct)
+    - Embeddings: FastEmbed (default: BAAI/bge-small-en-v1.5; override via
+      FASTEMBED_MODEL)
     - Vector store: Chroma (local, persisted under data/vector_store)
     - LLM: Groq chat model (configurable via env GROQ_MODEL; lazy-initialized)
     """
@@ -44,9 +58,9 @@ class TranscriptRAG:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
-        provider = "together"
-        model_name = "intfloat/multilingual-e5-large-instruct"
-        self.embeddings = TogetherEmbeddings(model=model_name)
+        provider = "fastembed"
+        model_name = os.getenv("FASTEMBED_MODEL", "BAAI/bge-small-en-v1.5")
+        self.embeddings = FastEmbedEmbeddings(model_name=model_name)
         safe_model = model_name.replace("-", "_").replace("/", "_")
         self.collection_name = f"transcripts_{provider}_{safe_model}"
         self.db: Chroma | None = None
