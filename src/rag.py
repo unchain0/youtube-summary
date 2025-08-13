@@ -13,12 +13,15 @@ from langchain_together.embeddings import TogetherEmbeddings
 
 from .utils.logging_setup import logger
 
+# Back-compat for tests that monkeypatch FastEmbedEmbeddings
+FastEmbedEmbeddings = TogetherEmbeddings
+
 
 class TranscriptRAG:
     """Build a vector store from transcript files and provide QA.
 
-    - Embeddings: FastEmbed (default: BAAI/bge-small-en-v1.5; override via
-      FASTEMBED_MODEL)
+    - Embeddings: Together AI (default: intfloat/multilingual-e5-large-instruct;
+      override via TOGETHER_EMBEDDINGS_MODEL)
     - Vector store: Chroma (local, persisted under data/vector_store)
     - LLM: Groq chat model (configurable via env GROQ_MODEL; lazy-initialized)
     """
@@ -45,8 +48,12 @@ class TranscriptRAG:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
-        self._embed_model_name = "intfloat/multilingual-e5-large-instruct"
-        self.embeddings = TogetherEmbeddings(model=self._embed_model_name)
+        self._embed_model_name = os.getenv(
+            "TOGETHER_EMBEDDINGS_MODEL",
+            "intfloat/multilingual-e5-large-instruct",
+        )
+        # Instantiate via alias so tests can monkeypatch FastEmbedEmbeddings
+        self.embeddings = FastEmbedEmbeddings(model=self._embed_model_name)
         safe_model = self._embed_model_name.replace("-", "_").replace("/", "_")
         self.collection_name = f"transcripts_together_{safe_model}"
         self.db: Chroma | None = None
@@ -57,44 +64,6 @@ class TranscriptRAG:
         self.model: ChatGroq | None = None
         # Root directory for transcripts to compute stable relative paths
         self.transcripts_root: Path | None = None
-
-    def configure_resources(self, max_threads: int | None = None) -> None:
-        """Configure CPU usage for embedding/indexing operations.
-
-        Sets common numeric backend env vars (e.g., OpenMP/BLAS) to limit
-        parallelism and reinitializes the embedding function so the change
-        takes effect before heavy work.
-
-        Args:
-            max_threads: Maximum threads to use (>=1). If None, do nothing.
-
-        """
-        if not max_threads:
-            return
-        # Clamp to sane bounds
-        threads = max(1, int(max_threads))
-        for var in (
-            "OMP_NUM_THREADS",
-            "OPENBLAS_NUM_THREADS",
-            "MKL_NUM_THREADS",
-            "NUMEXPR_NUM_THREADS",
-            "BLIS_NUM_THREADS",
-        ):
-            os.environ[var] = str(threads)
-        # Avoid tokenizer parallelism spikes when applicable
-        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
-        # Recreate embeddings to ensure new env takes effect
-        try:
-            self.embeddings = TogetherEmbeddings(model=self._embed_model_name)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "Failed to reinitialize embeddings after resource config: {}: {}",
-                type(e).__name__,
-                e,
-            )
-        # Ensure future DB instances pick up the new embedding function
-        self.db = None
 
     def _ensure_model(self) -> ChatGroq:
         if self.model is None:
