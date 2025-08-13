@@ -1,4 +1,5 @@
 """RAG utilities for indexing and querying YouTube transcripts."""
+
 import hashlib
 import os
 from pathlib import Path
@@ -7,8 +8,8 @@ from langchain.chains import RetrievalQA
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
-from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_groq import ChatGroq
+from langchain_together import TogetherEmbeddings
 
 from .utils.logging_setup import logger
 
@@ -16,7 +17,7 @@ from .utils.logging_setup import logger
 class TranscriptRAG:
     """Build a vector store from transcript files and provide QA.
 
-    - Embeddings: FastEmbed (local/offline by default)
+    - Embeddings: Together AI (Multilingual E5 Large Instruct)
     - Vector store: Chroma (local, persisted under data/vector_store)
     - LLM: Groq chat model (configurable via env GROQ_MODEL; lazy-initialized)
     """
@@ -24,7 +25,6 @@ class TranscriptRAG:
     def __init__(
         self,
         vector_dir: str | Path = "data/vector_store",
-        embedding_model: str | None = None,
         chunk_size: int = 1500,
         chunk_overlap: int = 150,
         groq_model: str | None = None,
@@ -33,7 +33,6 @@ class TranscriptRAG:
 
         Args:
             vector_dir: Directory where the Chroma DB will persist.
-            embedding_model: Optional FastEmbed model name override.
             chunk_size: Max characters per chunk for splitting.
             chunk_overlap: Overlap between adjacent chunks.
             groq_model: Optional Groq model name; defaults to env or a sensible default.
@@ -45,9 +44,9 @@ class TranscriptRAG:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
-        provider = "fastembed"
-        model_name = embedding_model or "jinaai/jina-embeddings-v2-base-de"
-        self.embeddings = FastEmbedEmbeddings(model_name=model_name)
+        provider = "together"
+        model_name = "intfloat/multilingual-e5-large-instruct"
+        self.embeddings = TogetherEmbeddings(model=model_name)
         safe_model = model_name.replace("-", "_").replace("/", "_")
         self.collection_name = f"transcripts_{provider}_{safe_model}"
         self.db: Chroma | None = None
