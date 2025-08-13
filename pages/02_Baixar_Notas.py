@@ -2,16 +2,40 @@
 
 UI language: Portuguese (pt-BR). Code/docstrings/logs in English.
 """
+
 # ruff: noqa: N999
 from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable  # noqa: TC003
+from contextlib import redirect_stderr
+from functools import wraps
+from io import StringIO
 from pathlib import Path
+from typing import ParamSpec, TypeVar
 
 import streamlit as st
 
 from src.youtube import YouTubeTranscriptManager
+
+T = TypeVar("T")
+P = ParamSpec("P")
+
+
+def suppress_stderr_decorator[T, P: ParamSpec](func: Callable[P, T]) -> Callable[P, T]:
+    """Decorador para suprimir mensagens de erro durante a execução de uma função.
+
+    Especialmente útil para suprimir avisos de 'missing ScriptRunContext' em threads.
+    """
+
+    @wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        devnull = StringIO()
+        with redirect_stderr(devnull):
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 def _ensure_state() -> None:
@@ -34,6 +58,7 @@ def _channel_key_from_url(url: str) -> str:
     return url.rstrip("/").split("/")[-1].lstrip("@") or "channel"
 
 
+@suppress_stderr_decorator
 def _download_worker(
     channels: list[str],
     transcripts_dir: Path,
@@ -42,65 +67,75 @@ def _download_worker(
     *,
     subs_fallback: bool,
 ) -> None:
+    # Inicializar variáveis locais para evitar acesso constante ao st.session_state
+    # que causa os avisos de ScriptRunContext
     ss = st.session_state
     ss.download_running = True
     ss.download_errors = []
     ss.download_saved = []
     ss.download_last = ""
+    ss.download_total = 0
+    ss.download_done = 0
 
+    # Usar variáveis locais para minimizar acesso ao st.session_state
+    download_errors = []
+    download_saved = []
+    download_last = ""
+
+    # O decorador já está suprimindo todos os avisos
     yt = YouTubeTranscriptManager(base_dir=str(transcripts_dir))
 
+    # Processar URLs dos canais
     per_channel_urls: dict[str, list[str]] = {}
     total = 0
     try:
         for ch in channels:
+            # O decorador já está suprimindo todos os avisos
             urls = yt.get_video_urls_from_channel(ch)
             if limit is not None:
                 urls = urls[: int(limit)]
             per_channel_urls[ch] = urls
             total += len(urls)
     except Exception as e:  # noqa: BLE001
-        ss.download_errors.append(f"Falha ao listar vídeos: {e}")
+        download_errors.append(f"Falha ao listar vídeos: {e}")
+
+    # Atualizar o estado da sessão com os totais
     ss.download_total = total
     ss.download_done = 0
+    ss.download_errors = download_errors
 
+    # Processar cada URL
     for ch, urls in per_channel_urls.items():
         channel_key = _channel_key_from_url(ch)
         for url in urls:
-            if not ss.download_running:
+            if not ss.download_running:  # Verificar flag de cancelamento
                 break
             try:
+                # O decorador já está suprimindo todos os avisos
                 out = yt.save_transcript(
                     channel_key,
                     url,
                     languages=languages,
                     subs_fallback=subs_fallback,
                 )
-                ss.download_saved.append(str(out))
-                ss.download_last = out.stem
+                download_saved.append(str(out))
+                download_last = out.stem
             except Exception as e:  # noqa: BLE001
-                ss.download_errors.append(f"{url}: {e}")
+                download_errors.append(f"{url}: {e}")
             finally:
+                # Atualizar o estado da sessão após cada download
                 ss.download_done += 1
+                ss.download_last = download_last
+                ss.download_saved = download_saved
+                ss.download_errors = download_errors
                 time.sleep(0.05)
 
+    # Finalizar
     ss.download_running = False
 
 
-def main() -> None:  # noqa: PLR0915
-    """Render the page to download YouTube transcripts with progress."""
-    st.set_page_config(page_title="Baixar Notas", page_icon="⬇️", layout="wide")
-
-    # Hide default Streamlit menu
-    hide_streamlit_menu = """
-    <style>
-    #MainMenu {visibility: hidden;}
-    div[data-testid="stSidebarNav"] {display: none;}
-    </style>
-    """
-    st.markdown(hide_streamlit_menu, unsafe_allow_html=True)
-
-    _ensure_state()
+def _render_sidebar_nav() -> None:
+    """Render sidebar navigation links."""
     with st.sidebar:
         st.header("Navegação")
         st.page_link("main.py", label="Dashboard", icon="🏠")
@@ -109,68 +144,81 @@ def main() -> None:  # noqa: PLR0915
         st.page_link("pages/04_Chat.py", label="Chat", icon="💬")
         st.divider()
 
+
+def _render_title_and_caption() -> None:
+    """Render title and caption for the page."""
     st.title("Baixar notas (transcrições)")
     st.caption("O progresso é mostrado abaixo; você pode ir ao Chat enquanto baixa.")
 
-    st.session_state.channels_input = st.text_area(
+
+def _render_inputs() -> None:
+    """Render input controls and persist values to session_state."""
+    ss = st.session_state
+    ss.channels_input = st.text_area(
         "URLs dos canais (um por linha)",
-        value=st.session_state.channels_input,
+        value=ss.channels_input,
         placeholder="https://www.youtube.com/@Canal1\nhttps://www.youtube.com/@Canal2",
         height=160,
     )
-
     cols = st.columns(3)
     with cols[0]:
-        st.session_state.subs_fallback = st.checkbox(
+        ss.subs_fallback = st.checkbox(
             "Usar legendas quando necessário",
-            value=st.session_state.subs_fallback,
+            value=ss.subs_fallback,
         )
     with cols[1]:
         limit = st.number_input(
             "Limite por canal (0=ilimitado)",
             min_value=0,
             step=1,
-            value=st.session_state.limit or 0,
+            value=ss.limit or 0,
         )
-        st.session_state.limit = int(limit) if limit > 0 else None
+        ss.limit = int(limit) if limit > 0 else None
     with cols[2]:
         langs = st.multiselect(
             "Idiomas",
             options=["pt", "en", "es", "fr", "de", "it"],
-            default=st.session_state.languages,
+            default=ss.languages,
         )
-        st.session_state.languages = langs or ["pt", "en"]
+        ss.languages = langs or ["pt", "en"]
 
+
+def _maybe_start_download() -> None:
+    """Start background download thread if triggered by the user."""
+    ss = st.session_state
     start_download = st.button(
         "Iniciar download em segundo plano",
-        disabled=st.session_state.download_running,
+        disabled=ss.download_running,
     )
+    if not start_download:
+        return
+    channels = [x.strip() for x in ss.channels_input.splitlines() if x.strip()]
+    if not channels:
+        st.warning("Informe pelo menos um canal.")
+        return
+    t = threading.Thread(
+        target=_download_worker,
+        args=(
+            channels,
+            ss.transcripts_dir,
+            ss.languages,
+            ss.limit,
+        ),
+        kwargs={"subs_fallback": ss.subs_fallback},
+        daemon=True,
+    )
+    with st.spinner("Iniciando download em segundo plano..."):
+        t.start()
+        time.sleep(0.2)
+    st.success("Download iniciado. Acompanhe o progresso abaixo.")
 
-    if start_download:
-        channels = [
-            x.strip()
-            for x in st.session_state.channels_input.splitlines()
-            if x.strip()
-        ]
-        if not channels:
-            st.warning("Informe pelo menos um canal.")
-        else:
-            t = threading.Thread(
-                target=_download_worker,
-                args=(
-                    channels,
-                    st.session_state.transcripts_dir,
-                    st.session_state.languages,
-                    st.session_state.limit,
-                ),
-                kwargs={"subs_fallback": st.session_state.subs_fallback},
-                daemon=True,
-            )
-            t.start()
 
-    total = st.session_state.download_total
-    done = st.session_state.download_done
-    running = st.session_state.download_running
+def _render_progress_section() -> None:
+    """Render progress UI and auto-refresh logic."""
+    ss = st.session_state
+    total = ss.download_total
+    done = ss.download_done
+    running = ss.download_running
     progress = 0.0 if total == 0 else min(1.0, done / max(1, total))
     st.progress(progress, text=f"Progresso: {done}/{total}")
     if running:
@@ -181,23 +229,51 @@ def main() -> None:  # noqa: PLR0915
             help="Quando ativo, a página se atualiza a cada segundo enquanto baixa.",
         )
         if auto:
-            time.sleep(1.0)
+            with st.spinner("Atualizando progresso..."):
+                time.sleep(1.0)
             st.experimental_rerun()
+    # Completion message
+    if total > 0 and not running and done >= total:
+        st.success("Download concluído.")
 
-    if st.session_state.download_last:
-        st.caption(f"Último vídeo processado: {st.session_state.download_last}")
 
+def _render_results_section() -> None:
+    """Render the last processed item, errors and saved files."""
+    ss = st.session_state
+    if ss.download_last:
+        st.caption(f"Último vídeo processado: {ss.download_last}")
     cols2 = st.columns(2)
     with cols2[0]:
-        if st.session_state.download_errors:
+        if ss.download_errors:
             with st.expander("Erros (recentes)"):
-                for err in st.session_state.download_errors[-50:]:
+                for err in ss.download_errors[-50:]:
                     st.write(f"- {err}")
     with cols2[1]:
-        if st.session_state.download_saved:
+        if ss.download_saved:
             with st.expander("Arquivos salvos (recentes)"):
-                for p in st.session_state.download_saved[-20:]:
+                for p in ss.download_saved[-20:]:
                     st.write(p)
+
+
+def main() -> None:
+    """Render the page to download YouTube transcripts with progress."""
+    st.set_page_config(page_title="Baixar Notas", page_icon="⬇️", layout="wide")
+
+    hide_streamlit_menu = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    div[data-testid="stSidebarNav"] {display: none;}
+    </style>
+    """
+    st.markdown(hide_streamlit_menu, unsafe_allow_html=True)
+
+    _ensure_state()
+    _render_sidebar_nav()
+    _render_title_and_caption()
+    _render_inputs()
+    _maybe_start_download()
+    _render_progress_section()
+    _render_results_section()
 
 
 if __name__ == "__main__":

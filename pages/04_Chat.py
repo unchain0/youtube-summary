@@ -74,21 +74,25 @@ def main() -> None:
         # Echo user message
         with st.chat_message("user"):
             st.markdown(prompt)
-        try:
-            answer = _get_rag().query(prompt.strip(), k=st.session_state.top_k)
-        except Exception as e:  # noqa: BLE001
-            err = (
-                f"Falha ao consultar. Verifique GROQ_API_KEY e o modelo. Detalhes: {e}"
-            )
-            with st.chat_message("assistant"):
+        with st.chat_message("assistant"):
+            try:
+                with st.spinner("Consultando o índice e gerando resposta..."):
+                    answer = _get_rag().query(
+                        prompt.strip(), k=st.session_state.top_k,
+                    )
+            except Exception as e:  # noqa: BLE001
+                err = (
+                    "Falha ao consultar. Verifique GROQ_API_KEY e o modelo. "
+                    f"Detalhes: {e}"
+                )
                 st.error(err)
-            st.session_state.chat.append({"role": "user", "content": prompt})
-            st.session_state.chat.append({"role": "assistant", "content": err})
-        else:
-            with st.chat_message("assistant"):
+                st.session_state.chat.append({"role": "user", "content": prompt})
+                st.session_state.chat.append({"role": "assistant", "content": err})
+            else:
                 st.markdown(answer)
-            st.session_state.chat.append({"role": "user", "content": prompt})
-            st.session_state.chat.append({"role": "assistant", "content": answer})
+                st.caption("Concluído.")
+                st.session_state.chat.append({"role": "user", "content": prompt})
+                st.session_state.chat.append({"role": "assistant", "content": answer})
 
 
 if __name__ == "__main__":

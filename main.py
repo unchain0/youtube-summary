@@ -1,7 +1,5 @@
 """Streamlit app replacing the CLI for YouTube transcript RAG.
 
-UI language: Portuguese (pt-BR). Code comments/logs: English.
-
 Features (parity with CLI):
 - Fetch transcripts for one or more channels (with languages, limit, subs fallback)
 - Build/Update the vector store (rebuild or incremental)
@@ -18,12 +16,16 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import streamlit as st
 from dotenv import load_dotenv
 
 from src.rag import TranscriptRAG
 from src.youtube import YouTubeTranscriptManager
+
+if TYPE_CHECKING:
+    from streamlit.delta_generator import DeltaGenerator
 
 
 # ----------------------------- Helpers (backend) -----------------------------
@@ -138,8 +140,8 @@ def _get_rag() -> TranscriptRAG:
 
 
 # ------------------------------- UI Definition -------------------------------
-def main() -> None:  # noqa: C901, PLR0912, PLR0915
-    """Render the Streamlit dashboard to download, index, and chat."""
+def _setup_page() -> None:
+    """Shared page setup: env, page config, style, state, heading."""
     load_dotenv()
     st.set_page_config(
         page_title="YouTube Summary",
@@ -157,11 +159,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     """
     st.markdown(hide_streamlit_menu, unsafe_allow_html=True)
     _ensure_state()
-
     st.title("YouTube Summary • Streamlit")
     st.caption("Baixe notas, indexe e converse — tudo em um só lugar.")
 
-    # Sidebar settings
+
+def _render_sidebar() -> None:
+    """Sidebar navigation, settings, and indexing actions."""
     with st.sidebar:
         # Navigation with icons
         st.header("Navegação")
@@ -172,7 +175,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         st.divider()
 
         st.header("Configurações")
-
         langs = st.multiselect(
             "Idiomas preferidos",
             options=["pt", "en", "es", "fr", "de", "it"],
@@ -199,12 +201,16 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         st.subheader("Indexação (RAG)")
         if st.button("Reindexar do zero (rebuild)"):
             try:
-                _get_rag().index_transcripts(st.session_state.transcripts_dir)
-                st.success("Índice refeito com sucesso.")
+                with st.spinner("Reindexando transcrições..."):
+                    _get_rag().index_transcripts(st.session_state.transcripts_dir)
             except Exception as e:  # noqa: BLE001
                 st.error(f"Falha ao reindexar: {e}")
+            else:
+                st.success("Índice refeito com sucesso.")
 
-    # Summary of downloaded channels
+
+def _render_channels_summary() -> None:
+    """Summary of downloaded channels and file counts."""
     with st.expander("YouTubers baixados (resumo)", expanded=False):
         rows = _list_channels(st.session_state.transcripts_dir)
         if not rows:
@@ -213,77 +219,103 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             for ch_key, count in rows:
                 st.write(f"• {ch_key}: {count} arquivos")
 
-    # Two-column layout: Download (left) and Chat (right)
-    col_left, col_right = st.columns(2)
 
-    # Left: Download Notes with progress
+def _download_text_input() -> None:
+    """Render channel URLs input area."""
+    st.session_state.channels_input = st.text_area(
+        "URLs dos canais (um por linha)",
+        value=st.session_state.channels_input,
+        placeholder="https://www.youtube.com/@Canal1\nhttps://www.youtube.com/@Canal2",
+        height=120,
+    )
+
+
+def _handle_download_start_button() -> None:
+    """Start background download when user clicks the button."""
+    start_download = st.button(
+        "Iniciar download em segundo plano",
+        disabled=st.session_state.download_running,
+    )
+    if not start_download:
+        return
+    channels = [
+        x.strip() for x in st.session_state.channels_input.splitlines() if x.strip()
+    ]
+    if not channels:
+        st.warning("Informe pelo menos um canal.")
+        return
+    t = threading.Thread(
+        target=_download_worker,
+        args=(
+            channels,
+            st.session_state.transcripts_dir,
+            st.session_state.languages,
+        ),
+        kwargs={
+            "limit": st.session_state.limit,
+            "subs_fallback": st.session_state.subs_fallback,
+        },
+        daemon=True,
+    )
+    with st.spinner("Iniciando download em segundo plano..."):
+        t.start()
+        time.sleep(0.2)
+    st.success("Download iniciado. Acompanhe o progresso abaixo.")
+
+
+def _render_progress_widgets() -> None:
+    """Show progress bar and optional auto-refresh while running."""
+    total = st.session_state.download_total
+    done = st.session_state.download_done
+    running = st.session_state.download_running
+    progress = 0.0 if total == 0 else min(1.0, done / max(1, total))
+    st.progress(progress, text=f"Progresso: {done}/{total}")
+    if running:
+        st.info("Baixando... você pode usar o chat ao lado enquanto isso.")
+        auto = st.checkbox(
+            "Auto-atualizar progresso",
+            value=True,
+            key="auto_refresh_main",
+            help=("Quando ativo, a página se atualiza a cada segundo enquanto baixa."),
+        )
+        if auto:
+            with st.spinner("Atualizando progresso..."):
+                time.sleep(1.0)
+            st.experimental_rerun()
+
+
+def _render_completion_and_details() -> None:
+    """Show completion message, last processed item, errors and saved files."""
+    total = st.session_state.download_total
+    done = st.session_state.download_done
+    running = st.session_state.download_running
+    if total > 0 and not running and done >= total:
+        st.success("Download concluído.")
+    if st.session_state.download_last:
+        st.caption(f"Último vídeo processado: {st.session_state.download_last}")
+    if st.session_state.download_errors:
+        with st.expander("Erros (clique para ver)"):
+            for err in st.session_state.download_errors[-50:]:
+                st.write(f"- {err}")
+    if st.session_state.download_saved:
+        with st.expander("Arquivos salvos (recentes)"):
+            for p in st.session_state.download_saved[-20:]:
+                st.write(p)
+
+
+def _render_download_section(col_left: DeltaGenerator) -> None:
+    """Left column: download UI + progress and results."""
     with col_left:
         st.subheader("Baixar notas (transcrições)")
-        st.session_state.channels_input = st.text_area(
-            "URLs dos canais (um por linha)",
-            value=st.session_state.channels_input,
-            placeholder="https://www.youtube.com/@Canal1\nhttps://www.youtube.com/@Canal2",
-            height=120,
-        )
-        start_download = st.button(
-            "Iniciar download em segundo plano",
-            disabled=st.session_state.download_running,
-        )
-        if start_download:
-            channels = [
-                x.strip()
-                for x in st.session_state.channels_input.splitlines()
-                if x.strip()
-            ]
-            if not channels:
-                st.warning("Informe pelo menos um canal.")
-            else:
-                t = threading.Thread(
-                    target=_download_worker,
-                    args=(
-                        channels,
-                        st.session_state.transcripts_dir,
-                        st.session_state.languages,
-                    ),
-                    kwargs={
-                        "limit": st.session_state.limit,
-                        "subs_fallback": st.session_state.subs_fallback,
-                    },
-                    daemon=True,
-                )
-                t.start()
+        _download_text_input()
+        _handle_download_start_button()
+        _render_progress_widgets()
+        _render_completion_and_details()
 
-        # Progress widgets
-        total = st.session_state.download_total
-        done = st.session_state.download_done
-        running = st.session_state.download_running
-        progress = 0.0 if total == 0 else min(1.0, done / max(1, total))
-        st.progress(progress, text=f"Progresso: {done}/{total}")
-        if running:
-            st.info("Baixando... você pode usar o chat ao lado enquanto isso.")
-            auto = st.checkbox(
-                "Auto-atualizar progresso",
-                value=True,
-                key="auto_refresh_main",
-                help=(
-                    "Quando ativo, a página se atualiza a cada segundo enquanto baixa."
-                ),
-            )
-            if auto:
-                time.sleep(1.0)
-                st.experimental_rerun()
-        if st.session_state.download_last:
-            st.caption(f"Último vídeo processado: {st.session_state.download_last}")
-        if st.session_state.download_errors:
-            with st.expander("Erros (clique para ver)"):
-                for err in st.session_state.download_errors[-50:]:
-                    st.write(f"- {err}")
-        if st.session_state.download_saved:
-            with st.expander("Arquivos salvos (recentes)"):
-                for p in st.session_state.download_saved[-20:]:
-                    st.write(p)
 
-    with col_right:  # Right: Chat
+def _render_chat_section(col_right: DeltaGenerator) -> None:
+    """Right column: chat UI and behavior."""
+    with col_right:
         st.subheader("Conversar com os vídeos")
         st.session_state.top_k = st.slider(
             "Número de passagens recuperadas (k)",
@@ -291,35 +323,56 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             10,
             st.session_state.top_k,
         )
-        # Render chat history using Streamlit chat components
         for msg in st.session_state.chat[-20:]:
             with st.chat_message(msg.get("role", "assistant")):
                 st.markdown(msg.get("content", ""))
-
-        # Chat input (recommended API)
         prompt = st.chat_input("Pergunte algo sobre os vídeos indexados...")
         if prompt:
-            # Show the user message immediately
             with st.chat_message("user"):
                 st.markdown(prompt)
-            try:
-                answer = _get_rag().query(prompt.strip(), k=st.session_state.top_k)
-            except Exception as e:  # noqa: BLE001
-                err = (
-                    "Falha ao consultar. Verifique GROQ_API_KEY e o modelo. "
-                    f"Detalhes: {e}"
-                )
-                with st.chat_message("assistant"):
+            with st.chat_message("assistant"):
+                try:
+                    with st.spinner("Consultando o índice e gerando resposta..."):
+                        answer = _get_rag().query(
+                            prompt.strip(),
+                            k=st.session_state.top_k,
+                        )
+                except Exception as e:  # noqa: BLE001
+                    err = (
+                        "Falha ao consultar. Verifique GROQ_API_KEY e o modelo. "
+                        f"Detalhes: {e}"
+                    )
                     st.error(err)
-                # persist history
-                st.session_state.chat.append({"role": "user", "content": prompt})
-                st.session_state.chat.append({"role": "assistant", "content": err})
-            else:
-                # Show assistant message and persist history
-                with st.chat_message("assistant"):
+                    st.session_state.chat.append(
+                        {"role": "user", "content": prompt},
+                    )
+                    st.session_state.chat.append(
+                        {"role": "assistant", "content": err},
+                    )
+                else:
                     st.markdown(answer)
-                st.session_state.chat.append({"role": "user", "content": prompt})
-                st.session_state.chat.append({"role": "assistant", "content": answer})
+                    st.caption("Concluído.")
+                    st.session_state.chat.append(
+                        {"role": "user", "content": prompt},
+                    )
+                    st.session_state.chat.append(
+                        {"role": "assistant", "content": answer},
+                    )
+
+
+def _render_two_column_layout() -> None:
+    """Two-column main layout: download (left) and chat (right)."""
+    col_left, col_right = st.columns(2)
+    _render_download_section(col_left)
+    _render_chat_section(col_right)
+
+
+def main() -> None:
+    """Render the Streamlit dashboard to download, index, and chat."""
+    _setup_page()
+    _render_sidebar()
+    _render_channels_summary()
+    _render_two_column_layout()
 
 
 if __name__ == "__main__":

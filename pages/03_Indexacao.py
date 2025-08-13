@@ -71,10 +71,12 @@ def main() -> None:
     st.subheader("Reindexar do zero")
     if st.button("Reindexar agora"):
         try:
-            _get_rag().index_transcripts(st.session_state.transcripts_dir)
-            st.success("Índice refeito com sucesso.")
+            with st.spinner("Reindexando transcrições..."):
+                _get_rag().index_transcripts(st.session_state.transcripts_dir)
         except Exception as e:  # noqa: BLE001
             st.error(f"Falha ao reindexar: {e}")
+        else:
+            st.success("Índice refeito com sucesso.")
 
     st.divider()
     st.subheader("Atualizar canais (incremental)")
@@ -89,12 +91,14 @@ def main() -> None:
     if update and selected:
         try:
             rag = _get_rag()
-            for ch in selected:
-                ch_dir = st.session_state.transcripts_dir / ch
-                rag.add_channel(ch_dir)
-            st.success("Canais atualizados no índice.")
+            with st.spinner("Atualizando canais selecionados..."):
+                for ch in selected:
+                    ch_dir = st.session_state.transcripts_dir / ch
+                    rag.add_channel(ch_dir)
         except Exception as e:  # noqa: BLE001
             st.error(f"Falha ao atualizar: {e}")
+        else:
+            st.success("Canais atualizados no índice.")
 
 
 if __name__ == "__main__":
