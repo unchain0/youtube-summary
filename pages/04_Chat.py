@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from groq import Groq
 
 from src.rag import TranscriptRAG
+from src.utils.logging_setup import get_logger, setup_logging
 
 
 # Helper to inject crisp favicon links (avoid oversized/clipped emoji)
@@ -26,6 +27,16 @@ def _set_favicon(url: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _ensure_logging() -> None:
+    """Initialize logging once per Streamlit session."""
+    if not st.session_state.get("_logging_initialized", False):
+        setup_logging()
+        st.session_state["_logging_initialized"] = True
+
+
+logger = get_logger("chat")
 
 
 def _ensure_state() -> None:
@@ -43,6 +54,13 @@ def _ensure_state() -> None:
 def _get_rag() -> TranscriptRAG:
     ss = st.session_state
     if ss.rag is None or not isinstance(ss.rag, TranscriptRAG):
+        logger.info(
+            "Initializing TranscriptRAG",
+            extra={
+                "vector_dir": str(ss.vector_dir),
+                "groq_model": ss.groq_model_name,
+            },
+        )
         ss.rag = TranscriptRAG(
             vector_dir=ss.vector_dir,
             groq_model=ss.groq_model_name,
@@ -55,15 +73,20 @@ def _list_groq_models(api_key: str | None) -> list[str]:
     """Fetch Groq models via SDK. Returns [] on error or missing key."""
     try:
         if not api_key:
+            logger.warning("GROQ_API_KEY not set; cannot list models")
             return []
         client = Groq(api_key=api_key)
         resp = client.models.list()
         data = getattr(resp, "data", None)
         items = data if data is not None else getattr(resp, "models", [])
         ids = [str(getattr(m, "id", "")) for m in items]
-        return sorted({i for i in ids if i})
-    except Exception:  # noqa: BLE001
+        models = sorted({i for i in ids if i})
+        logger.debug("Groq models listed", extra={"count": len(models)})
+    except Exception:
+        logger.exception("Failed to list Groq models")
         return []
+    else:
+        return models
 
 
 def _render_groq_listing_hint(dyn_groq: list[str], groq_key: str | None) -> None:
@@ -89,6 +112,7 @@ def _render_groq_model_selector() -> None:
         "Custom…",
     ]
     if st.button("🔄 Atualizar modelos", use_container_width=True):
+        logger.info("Refresh Groq models clicked")
         st.cache_data.clear()
         st.rerun()
     _render_groq_listing_hint(dyn_groq, groq_key)
@@ -115,6 +139,7 @@ def _render_groq_model_selector() -> None:
     if current_groq != st.session_state.groq_model_name:
         st.session_state.groq_model_name = current_groq
         st.session_state.rag = None  # force re-instantiation with new model
+        logger.info("Groq model changed", extra={"model": current_groq})
         st.info(
             "Modelo Groq atualizado. Novas consultas usarão a nova configuração.",
         )
@@ -135,6 +160,7 @@ def _render_sidebar() -> None:
 def main() -> None:
     """Render a simple chat interface backed by the RAG index."""
     load_dotenv()
+    _ensure_logging()
     st.set_page_config(page_title="Chat", layout="wide")
 
     # Hide default Streamlit menu
@@ -151,6 +177,7 @@ def main() -> None:
 
     _ensure_state()
     _render_sidebar()
+    logger.info("Chat page configured")
 
     st.title("Conversar com os vídeos")
     st.caption("Pergunte algo; recuperamos passagens do índice e respondemos.")
@@ -165,6 +192,7 @@ def main() -> None:
     # Clear conversation
     if st.button("Limpar conversa"):
         st.session_state.chat = []
+        logger.info("Chat cleared by user")
         st.rerun()
 
     # Render chat history
@@ -181,11 +209,16 @@ def main() -> None:
         with st.chat_message("assistant"):
             try:
                 with st.spinner("Consultando o índice e gerando resposta..."):
+                    logger.info(
+                        "Querying RAG",
+                        extra={"top_k": st.session_state.top_k, "q_len": len(prompt)},
+                    )
                     answer, sources = _get_rag().query_with_sources(
                         prompt.strip(),
                         k=st.session_state.top_k,
                     )
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
+                logger.exception("Chat query failed")
                 err = (
                     "Falha ao consultar. Verifique GROQ_API_KEY e o modelo. "
                     f"Detalhes: {e}"
@@ -206,6 +239,10 @@ def main() -> None:
                     else:
                         st.caption("Nenhuma fonte retornada pelo pipeline.")
                 st.caption("Concluído.")
+                logger.info(
+                    "Chat query completed",
+                    extra={"sources": int(len(sources) if sources else 0)},
+                )
                 st.session_state.chat.append({"role": "user", "content": prompt})
                 st.session_state.chat.append({"role": "assistant", "content": answer})
 

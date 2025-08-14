@@ -12,6 +12,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from src.rag import TranscriptRAG
+from src.utils.logging_setup import get_logger, setup_logging
 
 
 def _set_favicon(url: str) -> None:
@@ -24,6 +25,16 @@ def _set_favicon(url: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _ensure_logging() -> None:
+    """Initialize logging once per Streamlit session."""
+    if not st.session_state.get("_logging_initialized", False):
+        setup_logging()
+        st.session_state["_logging_initialized"] = True
+
+
+logger = get_logger("index")
 
 
 def _ensure_state() -> None:
@@ -39,13 +50,19 @@ def _get_rag() -> TranscriptRAG:
         ss.rag = TranscriptRAG(
             vector_dir=ss.vector_dir,
         )
+        logger.info(
+            "Initialized TranscriptRAG",
+            extra={"vector_dir": str(ss.vector_dir)},
+        )
     return ss.rag
 
 
 def _list_channels(transcripts_dir: Path) -> list[str]:
     if not transcripts_dir.exists():
         return []
-    return [p.name for p in sorted(transcripts_dir.iterdir()) if p.is_dir()]
+    channels = [p.name for p in sorted(transcripts_dir.iterdir()) if p.is_dir()]
+    logger.debug("Listed channels", extra={"count": len(channels)})
+    return channels
 
 
 
@@ -68,6 +85,7 @@ def _configure_page() -> None:
     )
     _set_favicon(twemoji_base + "1f9e0.png")  # brain
     _ensure_state()
+    logger.info("Index page configured")
 
 
 def _render_sidebar_nav() -> None:
@@ -110,6 +128,7 @@ def _render_rebuild_section() -> None:
         try:
             rag = _get_rag()
             with st.spinner("Reindexando transcrições..."):
+                logger.info("Reindex start")
                 progress = st.progress(0)
                 status = st.empty()
 
@@ -126,9 +145,19 @@ def _render_rebuild_section() -> None:
                 )
                 progress.progress(1.0)
                 status.write("Concluído.")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
+            logger.exception("Reindex failed")
             st.error(f"Falha ao reindexar: {e}")
         else:
+            logger.info(
+                "Reindex success",
+                extra={
+                    "files": int(summary.get("files", 0)),
+                    "added": int(summary.get("added", 0)),
+                    "skipped": int(summary.get("skipped", 0)),
+                    "duration_s": float(summary.get("duration_s", 0.0)),
+                },
+            )
             st.success(
                 "Índice refeito com sucesso. "
                 f"Arquivos: {int(summary.get('files', 0))} | "
@@ -159,15 +188,21 @@ def _render_incremental_update_section() -> None:
         try:
             rag = _get_rag()
             with st.spinner("Atualizando canais selecionados..."):
+                logger.info("Incremental update selected", extra={"channels": selected})
                 total_added = 0
                 total_skipped = 0
                 for ch in selected:
                     a, s = rag.add_channel(st.session_state.transcripts_dir / ch)
                     total_added += a
                     total_skipped += s
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
+            logger.exception("Incremental update (selected) failed")
             st.error(f"Falha ao atualizar: {e}")
         else:
+            logger.info(
+                "Incremental update selected success",
+                extra={"added": total_added, "skipped": total_skipped},
+            )
             st.success(
                 "Canais atualizados. "
                 f"Adicionados: {total_added} | Pulados: {total_skipped}",
@@ -177,15 +212,24 @@ def _render_incremental_update_section() -> None:
         try:
             rag = _get_rag()
             with st.spinner("Atualizando todos os canais..."):
+                logger.info(
+                    "Incremental update all start",
+                    extra={"channels": channels},
+                )
                 total_added = 0
                 total_skipped = 0
                 for ch in channels:
                     a, s = rag.add_channel(st.session_state.transcripts_dir / ch)
                     total_added += a
                     total_skipped += s
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
+            logger.exception("Incremental update all failed")
             st.error(f"Falha ao atualizar todos: {e}")
         else:
+            logger.info(
+                "Incremental update all success",
+                extra={"added": total_added, "skipped": total_skipped},
+            )
             st.success(
                 "Todos os canais atualizados. "
                 f"Adicionados: {total_added} | Pulados: {total_skipped}",
@@ -207,18 +251,39 @@ def _render_channel_management() -> None:
         with col2:
             if st.button("Reindexar", key=f"reindex_{ch}"):
                 try:
+                    logger.info("Reindex single channel start", extra={"channel": ch})
                     a, s = _get_rag().add_channel(st.session_state.transcripts_dir / ch)
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
+                    logger.exception(
+                        "Reindex single channel failed",
+                        extra={"channel": ch},
+                    )
                     st.error(f"Falha ao reindexar {ch}: {e}")
                 else:
+                    logger.info(
+                        "Reindex single channel success",
+                        extra={"channel": ch, "added": a, "skipped": s},
+                    )
                     st.success(f"{ch}: adicionados {a}, pulados {s}")
         with col3:
             if st.button("Remover do índice", key=f"remove_{ch}"):
                 try:
+                    logger.info(
+                        "Remove channel from index start",
+                        extra={"channel": ch},
+                    )
                     removed = _get_rag().remove_channel_from_index(ch)
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
+                    logger.exception(
+                        "Remove channel from index failed",
+                        extra={"channel": ch},
+                    )
                     st.error(f"Falha ao remover {ch}: {e}")
                 else:
+                    logger.warning(
+                        "Channel removed from index",
+                        extra={"channel": ch, "removed_ids": removed},
+                    )
                     st.warning(
                         f"{ch}: removido do índice (ids encontradas: {removed}).",
                     )
@@ -226,6 +291,7 @@ def _render_channel_management() -> None:
 
 def main() -> None:
     """Index and update the vector store."""
+    _ensure_logging()
     _configure_page()
     _render_sidebar_nav()
 
@@ -236,6 +302,7 @@ def main() -> None:
     _render_rebuild_section()
     _render_incremental_update_section()
     _render_channel_management()
+    logger.info("Index page rendered")
 
 
 if __name__ == "__main__":

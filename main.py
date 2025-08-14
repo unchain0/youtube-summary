@@ -19,6 +19,8 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
+from src.utils.logging_setup import get_logger, setup_logging
+
 
 def _set_favicon(url: str) -> None:
     """Inject favicon links so the tab icon renders crisply without clipping."""
@@ -30,6 +32,16 @@ def _set_favicon(url: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _ensure_logging() -> None:
+    """Initialize logging once per Streamlit session."""
+    if not st.session_state.get("_logging_initialized", False):
+        setup_logging()
+        st.session_state["_logging_initialized"] = True
+
+
+logger = get_logger("dashboard")
 
 
 def _ensure_state() -> None:
@@ -54,6 +66,7 @@ def _list_channels(transcripts_dir: Path) -> list[tuple[str, int]]:
 def _setup_page() -> None:
     """Shared page setup: env, page config, style, state, heading."""
     load_dotenv()
+    _ensure_logging()
     st.set_page_config(
         page_title="YouTube Summary",
         layout="wide",
@@ -77,6 +90,7 @@ def _setup_page() -> None:
     st.caption(
         "Visão geral do projeto e métricas. As ações estão nas páginas laterais.",
     )
+    logger.info("Dashboard page configured")
 
 
 def _render_sidebar() -> None:
@@ -115,6 +129,14 @@ def _render_overview_metrics() -> None:
     vdir = st.session_state.vector_dir
     v_exists = vdir.exists()
     v_size = _dir_size_bytes(vdir) if v_exists else 0
+    logger.debug(
+        "Overview metrics computed",
+        extra={
+            "channels": total_channels,
+            "transcripts": total_transcripts,
+            "vector_store_bytes": v_size,
+        },
+    )
 
     c1, c2, c3 = st.columns(3)
     with c1:

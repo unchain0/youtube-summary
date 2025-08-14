@@ -16,6 +16,7 @@ import streamlit as st
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 from src.rag import TranscriptRAG
+from src.utils.logging_setup import get_logger, setup_logging
 from src.utils.youtube_helpers import channel_key_from_url, filter_pending_urls
 from src.youtube import YouTubeTranscriptManager
 
@@ -32,9 +33,23 @@ def _set_favicon(url: str) -> None:
     )
 
 
+def _ensure_logging() -> None:
+    """Initialize logging once per Streamlit session."""
+    if not st.session_state.get("_logging_initialized", False):
+        setup_logging()
+        st.session_state["_logging_initialized"] = True
+
+
+logger = get_logger("download")
+
+
 def _start_thread_with_streamlit_ctx(t: threading.Thread) -> None:
     """Start a thread with Streamlit ScriptRunContext to avoid console warnings."""
     add_script_run_ctx(t)
+    logger.debug(
+        "Starting thread",
+        extra={"thread_name": t.name, "daemon": t.daemon},
+    )
     t.start()
 
 
@@ -74,6 +89,16 @@ def _download_worker(  # noqa: PLR0913
     ss.download_errors = []
     ss.download_saved = []
     ss.download_last = ""
+    logger.info(
+        "Download worker started",
+        extra={
+            "channels": len(channels),
+            "languages": languages,
+            "limit": limit,
+            "subs_fallback": subs_fallback,
+            "stream_indexing": bool(index_queue is not None),
+        },
+    )
 
     download_errors = []
     download_saved = []
@@ -90,8 +115,9 @@ def _download_worker(  # noqa: PLR0913
                 urls = urls[: int(limit)]
             per_channel_urls[ch] = urls
             total += len(urls)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         download_errors.append(f"Falha ao listar vídeos: {e}")
+        logger.exception("Failed listing video URLs")
 
     # Filter out URLs that already have transcripts persisted
     per_channel_urls, _ = filter_pending_urls(
@@ -115,12 +141,21 @@ def _download_worker(  # noqa: PLR0913
                 )
                 download_saved.append(str(out))
                 download_last = out.stem
+                logger.debug(
+                    "Transcript saved",
+                    extra={"path": str(out), "channel": channel_key},
+                )
                 # Push to indexing queue if enabled
                 if index_queue is not None:
                     with suppress(queue.Full):
                         index_queue.put(out, timeout=0.1)
-            except Exception as e:  # noqa: BLE001
+                        logger.debug("Queued for indexing", extra={"path": str(out)})
+            except Exception as e:
                 download_errors.append(f"{url}: {e}")
+                logger.exception(
+                    "Failed to save transcript",
+                    extra={"url": url, "error": str(e)},
+                )
             finally:
                 ss.download_last = download_last
                 ss.download_saved = download_saved
@@ -128,10 +163,18 @@ def _download_worker(  # noqa: PLR0913
                 time.sleep(0.05)
 
     ss.download_running = False
+    logger.info(
+        "Download worker finished",
+        extra={
+            "saved": len(download_saved),
+            "errors": len(download_errors),
+        },
+    )
     # Signal index worker to finish when queue is empty
     if index_queue is not None:
         with suppress(queue.Full):
             index_queue.put(None, timeout=0.1)
+            logger.debug("Sentinel enqueued for indexer")
 
 
 def _index_worker(transcripts_root: Path, q: queue.Queue) -> None:
@@ -140,6 +183,7 @@ def _index_worker(transcripts_root: Path, q: queue.Queue) -> None:
     ss.index_errors = []
     rag = TranscriptRAG()
     rag.transcripts_root = transcripts_root
+    logger.info("Index worker started", extra={"root": str(transcripts_root)})
     # Ensure DB is created lazily by add_transcript_file -> _ensure_db
     while True:
         try:
@@ -160,14 +204,30 @@ def _index_worker(transcripts_root: Path, q: queue.Queue) -> None:
             added, skipped = rag.add_transcript_file(item)
             ss.index_added += int(added)
             ss.index_skipped += int(skipped)
-        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "Indexed file",
+                extra={"path": str(item), "added": int(added), "skipped": int(skipped)},
+            )
+        except Exception as e:
             errs = ss.index_errors
             errs.append(f"{item}: {e}")
             ss.index_errors = errs[-200:]
+            logger.exception(
+                "Indexing failed for item",
+                extra={"path": str(item)},
+            )
         finally:
             with suppress(ValueError):
                 q.task_done()
     ss.index_running = False
+    logger.info(
+        "Index worker finished",
+        extra={
+            "added": ss.index_added,
+            "skipped": ss.index_skipped,
+            "errors": len(ss.index_errors),
+        },
+    )
 
 
 def _render_sidebar_nav() -> None:
@@ -240,6 +300,16 @@ def _maybe_start_download() -> None:
     if not channels:
         st.warning("Informe pelo menos um canal.")
         return
+    logger.info(
+        "Starting background download",
+        extra={
+            "channels": len(channels),
+            "languages": ss.languages,
+            "limit": ss.limit,
+            "subs_fallback": ss.subs_fallback,
+            "stream_indexing": ss.stream_indexing,
+        },
+    )
     # Prepare optional indexing worker
     q: queue.Queue | None = None
     if ss.stream_indexing:
@@ -315,6 +385,7 @@ def _render_results_section() -> None:
 
 def main() -> None:
     """Render the page to download YouTube transcripts with progress."""
+    _ensure_logging()
     st.set_page_config(page_title="Baixar Notas", layout="wide")
 
     hide_streamlit_menu = """
@@ -337,6 +408,7 @@ def main() -> None:
     _maybe_start_download()
     _render_status_notice()
     _render_results_section()
+    logger.info("Download page rendered")
 
 
 if __name__ == "__main__":
