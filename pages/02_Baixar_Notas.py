@@ -178,7 +178,6 @@ def _maybe_start_download() -> None:
     with st.spinner("Iniciando download em segundo plano..."):
         _start_thread_with_streamlit_ctx(t)
         time.sleep(0.2)
-    st.success("Download iniciado. Acompanhe o progresso abaixo.")
 
 
 def _render_status_notice() -> None:

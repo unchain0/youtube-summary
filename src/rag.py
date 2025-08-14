@@ -7,6 +7,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from langchain.chains import RetrievalQA
+from langchain.prompts import (
+    ChatPromptTemplate,
+)
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
@@ -65,6 +68,49 @@ class TranscriptRAG:
         self.model: ChatGroq | None = None
         # Root directory for transcripts to compute stable relative paths
         self.transcripts_root: Path | None = None
+
+    def _system_prompt(self) -> str:
+        """Return the system prompt for Groq RAG, optionally overridden by env.
+
+        Env var: RAG_SYSTEM_PROMPT
+        """
+        env_prompt = os.getenv("RAG_SYSTEM_PROMPT")
+        if env_prompt:
+            return env_prompt
+        return (
+            "Você é o autor dos conteúdos presentes nas transcrições fornecidas. "
+            "Escreva em primeira pessoa, em português do Brasil, com tom claro, "
+            "confiante e direto. Responda somente com base no CONTEXTO "
+            "fornecido; não invente informações. Não mencione “fontes”, "
+            "“contexto”, nem use expressões como “de acordo com as fontes” ou "
+            "“segundo o autor”. Não mencione que é um sistema de IA.\n\n"
+            "Se a informação solicitada não estiver no CONTEXTO, diga que esse "
+            "ponto não foi abordado nos materiais e, se fizer sentido, sugira "
+            "revisar os vídeos relevantes ou refinar a pergunta.\n\n"
+            "Estruture a resposta como um texto autoral coeso; quando útil, "
+            "utilize listas curtas e objetivas. Evite redundâncias, desculpas e "
+            "qualificadores desnecessários. Mantenha foco, precisão e "
+            "consistência com o que está nos trechos."
+        )
+
+    def _build_chat_prompt(self) -> ChatPromptTemplate:
+        """Compose a chat prompt with system instructions and placeholders.
+
+        Works with RetrievalQA chain_type="stuff" expecting {context} and {question}.
+        """
+        system = self._system_prompt()
+        return ChatPromptTemplate.from_messages(
+            [
+                ("system", system),
+                (
+                    "human",
+                    "Pergunta: {question}\n\n"
+                    "Contexto (trechos relevantes):\n"
+                    "{context}\n\n"
+                    "Siga as instruções do sistema.",
+                ),
+            ],
+        )
 
     def _ensure_model(self) -> ChatGroq:
         if self.model is None:
@@ -405,7 +451,12 @@ class TranscriptRAG:
         db = self._ensure_db()
         llm = self._ensure_model()
         retriever = db.as_retriever(search_kwargs={"k": k})
-        qa = RetrievalQA.from_chain_type(llm, chain_type="stuff", retriever=retriever)
+        qa = RetrievalQA.from_chain_type(
+            llm,
+            chain_type="stuff",
+            retriever=retriever,
+            chain_type_kwargs={"prompt": self._build_chat_prompt()},
+        )
         result = qa.invoke({"query": question})
         if isinstance(result, dict) and "result" in result:
             return str(result["result"])
@@ -428,6 +479,7 @@ class TranscriptRAG:
             chain_type="stuff",
             retriever=retriever,
             return_source_documents=True,
+            chain_type_kwargs={"prompt": self._build_chat_prompt()},
         )
         result = qa.invoke({"query": question})
         answer: str

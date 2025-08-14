@@ -3,6 +3,7 @@
 
 UI language: Portuguese (pt-BR). Code/docstrings/logs in English.
 """
+
 from __future__ import annotations
 
 import os
@@ -72,7 +73,10 @@ def main() -> None:
     st.caption("Pergunte algo; recuperamos passagens do índice e respondemos.")
 
     st.session_state.top_k = st.slider(
-        "Número de passagens recuperadas (k)", 1, 10, st.session_state.top_k,
+        "Número de passagens recuperadas (k)",
+        1,
+        10,
+        st.session_state.top_k,
     )
 
     # Clear conversation
@@ -95,7 +99,8 @@ def main() -> None:
             try:
                 with st.spinner("Consultando o índice e gerando resposta..."):
                     answer, sources = _get_rag().query_with_sources(
-                        prompt.strip(), k=st.session_state.top_k,
+                        prompt.strip(),
+                        k=st.session_state.top_k,
                     )
             except Exception as e:  # noqa: BLE001
                 err = (
