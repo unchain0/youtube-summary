@@ -6,15 +6,10 @@ UI language: Portuguese (pt-BR). Code/docstrings/logs in English.
 # ruff: noqa: N999
 from __future__ import annotations
 
-import json
-import os
-import urllib.request
 from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
-from groq import Groq
-from together import Together
 
 from src.rag import TranscriptRAG
 
@@ -24,18 +19,6 @@ def _ensure_state() -> None:
     ss.setdefault("transcripts_dir", Path("data/transcripts"))
     ss.setdefault("vector_dir", Path("data/vector_store"))
     ss.setdefault("rag", None)
-    # Model selections (overrides env)
-    ss.setdefault(
-        "embed_model_name",
-        os.getenv(
-            "TOGETHER_EMBEDDINGS_MODEL",
-            "intfloat/multilingual-e5-large-instruct",
-        ),
-    )
-    ss.setdefault(
-        "groq_model_name",
-        os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-    )
 
 
 def _get_rag() -> TranscriptRAG:
@@ -43,8 +26,6 @@ def _get_rag() -> TranscriptRAG:
     if ss.rag is None or not isinstance(ss.rag, TranscriptRAG):
         ss.rag = TranscriptRAG(
             vector_dir=ss.vector_dir,
-            embed_model_name=ss.embed_model_name,
-            groq_model=ss.groq_model_name,
         )
     return ss.rag
 
@@ -55,81 +36,6 @@ def _list_channels(transcripts_dir: Path) -> list[str]:
     return [p.name for p in sorted(transcripts_dir.iterdir()) if p.is_dir()]
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def _list_together_embedding_models(api_key: str | None) -> list[str]:
-    """Fetch TogetherAI models and filter to embeddings.
-
-    Returns an empty list on error or when API key is missing.
-    """
-    try:
-        if not api_key:
-            return []
-        client = Together(api_key=api_key)
-        resp = client.models.list()
-        items = getattr(resp, "data", None) or getattr(resp, "models", None) or resp
-        ids: list[str] = []
-        for m in items:
-            # Support both object-like and dict-like entries
-            mid = (
-                str(getattr(m, "id", ""))
-                if not isinstance(m, dict)
-                else str(m.get("id", ""))
-            )
-            mtype = (
-                str(getattr(m, "type", ""))
-                if not isinstance(m, dict)
-                else str(m.get("type", ""))
-            )
-            if mid and (
-                mtype.lower() in {"embedding", "embeddings"} or "embed" in mid.lower()
-            ):
-                ids.append(mid)
-        if ids:
-            return sorted(set(ids))
-    except Exception:  # noqa: BLE001
-        ids = []
-
-    # REST fallback when SDK returns empty or fails
-    try:
-        req = urllib.request.Request(
-            url="https://api.together.xyz/v1/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            method="GET",
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
-            body = resp.read()
-        payload = json.loads(body)
-        items = payload.get("data", [])
-        ids_http: list[str] = []
-        for m in items:
-            mid = str(m.get("id", ""))
-            mtype = str(m.get("type", ""))
-            if mid and (
-                mtype.lower() in {"embedding", "embeddings"} or "embed" in mid.lower()
-            ):
-                ids_http.append(mid)
-        return sorted(set(ids_http))
-    except Exception:  # noqa: BLE001
-        return []
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def _list_groq_models(api_key: str | None) -> list[str]:
-    """Fetch Groq models via SDK.
-
-    Returns an empty list on error or when API key is missing.
-    """
-    try:
-        if not api_key:
-            return []
-        client = Groq(api_key=api_key)
-        resp = client.models.list()
-        data = getattr(resp, "data", None)
-        items = data if data is not None else getattr(resp, "models", [])
-        ids = [str(getattr(m, "id", "")) for m in items]
-        return sorted({i for i in ids if i})
-    except Exception:  # noqa: BLE001
-        return []
 
 
 def _configure_page() -> None:
@@ -170,113 +76,7 @@ def _render_paths() -> None:
             st.code(str(st.session_state.vector_dir))
 
 
-def _render_model_settings() -> None:
-    """Configure Together Embeddings and Groq model from the UI."""
-    st.divider()
-    st.subheader("Configurações de Modelos")
-    st.caption(
-        "Trocar o modelo de embeddings pode exigir refazer o índice "
-        "(reindexar do zero).",
-    )
-
-    # Presets + dynamic lists
-    embed_presets = ["intfloat/multilingual-e5-large-instruct", "Custom…"]
-    groq_presets = ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "Custom…"]
-
-    together_key = os.getenv("TOGETHER_API_KEY")
-    groq_key = os.getenv("GROQ_API_KEY")
-    dyn_embeds = _list_together_embedding_models(together_key)
-    dyn_groq = _list_groq_models(groq_key)
-
-    embed_options = [
-        *sorted(set(embed_presets[:-1]) | set(dyn_embeds)),
-        "Custom…",
-    ]
-    groq_options = [
-        *sorted(set(groq_presets[:-1]) | set(dyn_groq)),
-        "Custom…",
-    ]
-
-    col_refresh, _ = st.columns([1, 3])
-    with col_refresh:
-        if st.button("Atualizar lista de modelos"):
-            st.cache_data.clear()
-            st.rerun()
-
-    _render_model_listing_hints(dyn_embeds, dyn_groq, together_key, groq_key)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        current_embed = st.session_state.embed_model_name
-        if current_embed in embed_options:
-            idx = embed_options.index(current_embed)
-        else:
-            idx = len(embed_options) - 1  # Custom…
-        sel = st.selectbox("Embeddings (Together)", embed_options, index=idx)
-        if sel == "Custom…":
-            current_embed = st.text_input(
-                "Nome do modelo de embeddings (Together)",
-                value=st.session_state.embed_model_name,
-            ).strip()
-        else:
-            current_embed = sel
-        changed_embed = current_embed != st.session_state.embed_model_name
-
-    with c2:
-        current_groq = st.session_state.groq_model_name
-        if current_groq in groq_options:
-            idx_g = groq_options.index(current_groq)
-        else:
-            idx_g = len(groq_options) - 1  # Custom…
-        sel_g = st.selectbox("LLM (Groq)", groq_options, index=idx_g)
-        if sel_g == "Custom…":
-            current_groq = st.text_input(
-                "Nome do modelo Groq",
-                value=st.session_state.groq_model_name,
-            ).strip()
-        else:
-            current_groq = sel_g
-        changed_groq = current_groq != st.session_state.groq_model_name
-
-    if changed_embed or changed_groq:
-        st.session_state.embed_model_name = current_embed
-        st.session_state.groq_model_name = current_groq
-        # Drop cached RAG to force re-instantiation with new models
-        st.session_state.rag = None
-        st.info(
-            "Modelos atualizados. Novas indexações/consultas usarão as novas "
-            "configurações.",
-        )
-
-
-def _render_model_listing_hints(
-    dyn_embeds: list[str],
-    dyn_groq: list[str],
-    together_key: str | None,
-    groq_key: str | None,
-) -> None:
-    """Render helper messages when dynamic model lists are empty."""
-    if not dyn_embeds:
-        if not together_key:
-            st.info(
-                "Defina TOGETHER_API_KEY para listar modelos de embeddings do "
-                "Together.",
-            )
-        else:
-            st.warning(
-                "Não foi possível recuperar modelos do Together agora. Verifique "
-                "sua chave/permissões ou tente novamente com 'Atualizar lista de "
-                "modelos'.",
-            )
-    if not dyn_groq:
-        if not groq_key:
-            st.info("Defina GROQ_API_KEY para listar modelos Groq.")
-        else:
-            st.warning(
-                "Não foi possível recuperar modelos do Groq agora. Verifique sua "
-                "chave/permissões ou tente novamente com 'Atualizar lista de "
-                "modelos'.",
-            )
+    # (Embeddings selection UI removed; Groq model selection moved to Chat page.)
 
 
 def _update_channels(rag: TranscriptRAG, channel_names: list[str]) -> None:
@@ -416,7 +216,6 @@ def main() -> None:
     st.caption("Refaça o índice do zero ou atualize por canal.")
 
     _render_paths()
-    _render_model_settings()
     _render_rebuild_section()
     _render_incremental_update_section()
     _render_channel_management()

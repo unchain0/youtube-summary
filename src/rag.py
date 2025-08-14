@@ -230,6 +230,40 @@ class TranscriptRAG:
             docs.append(Document(page_content=text, metadata={"source": rel}))
         return docs
 
+    def add_transcript_file(self, transcript_path: str | Path) -> tuple[int, int]:
+        """Incrementally index a single transcript .txt file.
+
+        Returns a tuple (added, skipped) referring to chunk vectors added/skipped.
+        Requires that ``self.transcripts_root`` is set to the root directory under
+        which ``transcript_path`` resides (e.g., ``data/transcripts``) to keep
+        ``metadata['source']`` stable across runs.
+        """
+        fpath = Path(transcript_path)
+        if not fpath.exists() or not fpath.is_file():
+            return (0, 0)
+        try:
+            text = fpath.read_text(encoding="utf-8").strip()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Failed to read transcript {}: {}: {}",
+                fpath,
+                type(e).__name__,
+                e,
+            )
+            return (0, 0)
+        if not text:
+            return (0, 0)
+        # Determine base for stable relative source
+        base = Path(self.transcripts_root or fpath.parent.parent)
+        try:
+            rel = fpath.relative_to(base).as_posix()
+        except ValueError:
+            # Fallback: just use filename
+            rel = fpath.name
+        doc = Document(page_content=text, metadata={"source": rel})
+        chunks = self.text_splitter.split_documents([doc])
+        return self._add_chunks_with_ids(chunks)
+
     def index_transcripts(
         self,
         transcripts_dir: str | Path,

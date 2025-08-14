@@ -6,13 +6,16 @@ UI language: Portuguese (pt-BR). Code/docstrings/logs in English.
 # ruff: noqa: N999
 from __future__ import annotations
 
+import queue
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 
 import streamlit as st
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
+from src.rag import TranscriptRAG
 from src.utils.youtube_helpers import channel_key_from_url, filter_pending_urls
 from src.youtube import YouTubeTranscriptManager
 
@@ -35,15 +38,24 @@ def _ensure_state() -> None:
     ss.setdefault("download_errors", [])
     ss.setdefault("download_last", "")
     ss.setdefault("download_saved", [])
+    # Streaming indexing state
+    ss.setdefault("stream_indexing", False)
+    ss.setdefault("index_running", False)
+    ss.setdefault("index_errors", [])
+    ss.setdefault("index_added", 0)
+    ss.setdefault("index_skipped", 0)
+    # Queue will be created on start when enabled
+    ss.setdefault("index_queue", None)
 
 
-def _download_worker(
+def _download_worker(  # noqa: PLR0913
     channels: list[str],
     transcripts_dir: Path,
     languages: list[str],
     limit: int | None,
     *,
     subs_fallback: bool,
+    index_queue: queue.Queue | None = None,
 ) -> None:
     ss = st.session_state
     ss.download_running = True
@@ -91,6 +103,10 @@ def _download_worker(
                 )
                 download_saved.append(str(out))
                 download_last = out.stem
+                # Push to indexing queue if enabled
+                if index_queue is not None:
+                    with suppress(queue.Full):
+                        index_queue.put(out, timeout=0.1)
             except Exception as e:  # noqa: BLE001
                 download_errors.append(f"{url}: {e}")
             finally:
@@ -100,6 +116,46 @@ def _download_worker(
                 time.sleep(0.05)
 
     ss.download_running = False
+    # Signal index worker to finish when queue is empty
+    if index_queue is not None:
+        with suppress(queue.Full):
+            index_queue.put(None, timeout=0.1)
+
+
+def _index_worker(transcripts_root: Path, q: queue.Queue) -> None:
+    ss = st.session_state
+    ss.index_running = True
+    ss.index_errors = []
+    rag = TranscriptRAG()
+    rag.transcripts_root = transcripts_root
+    # Ensure DB is created lazily by add_transcript_file -> _ensure_db
+    while True:
+        try:
+            item = q.get(timeout=0.5)
+        except queue.Empty:
+            # Periodically check if download stopped and queue is likely empty
+            if not ss.download_running:
+                # drain quickly if empty
+                try:
+                    item = q.get_nowait()
+                except queue.Empty:
+                    break
+            else:
+                continue
+        if item is None:
+            break
+        try:
+            added, skipped = rag.add_transcript_file(item)
+            ss.index_added += int(added)
+            ss.index_skipped += int(skipped)
+        except Exception as e:  # noqa: BLE001
+            errs = ss.index_errors
+            errs.append(f"{item}: {e}")
+            ss.index_errors = errs[-200:]
+        finally:
+            with suppress(ValueError):
+                q.task_done()
+    ss.index_running = False
 
 
 def _render_sidebar_nav() -> None:
@@ -149,6 +205,14 @@ def _render_inputs() -> None:
             default=ss.languages,
         )
         ss.languages = langs or ["pt", "en"]
+    ss.stream_indexing = st.checkbox(
+        "Indexar enquanto baixa (beta)",
+        value=ss.stream_indexing,
+        help=(
+            "Indexa cada transcrição assim que for salva, reduzindo o tempo total "
+            "até o chat ficar utilizável. Requer chave da Together AI válida."
+        ),
+    )
 
 
 def _maybe_start_download() -> None:
@@ -164,6 +228,21 @@ def _maybe_start_download() -> None:
     if not channels:
         st.warning("Informe pelo menos um canal.")
         return
+    # Prepare optional indexing worker
+    q: queue.Queue | None = None
+    if ss.stream_indexing:
+        q = queue.Queue()
+        ss.index_queue = q
+        ss.index_added = 0
+        ss.index_skipped = 0
+        ss.index_errors = []
+        t_index = threading.Thread(
+            target=_index_worker,
+            args=(ss.transcripts_dir, q),
+            daemon=True,
+        )
+        _start_thread_with_streamlit_ctx(t_index)
+
     t = threading.Thread(
         target=_download_worker,
         args=(
@@ -172,7 +251,7 @@ def _maybe_start_download() -> None:
             ss.languages,
             ss.limit,
         ),
-        kwargs={"subs_fallback": ss.subs_fallback},
+        kwargs={"subs_fallback": ss.subs_fallback, "index_queue": q},
         daemon=True,
     )
     with st.spinner("Iniciando download em segundo plano..."):
@@ -183,8 +262,13 @@ def _maybe_start_download() -> None:
 def _render_status_notice() -> None:
     """Render a simple status notice without progress bar."""
     ss = st.session_state
-    if ss.download_running:
-        st.info("Baixando... você pode usar o chat ao lado enquanto isso.")
+    if ss.stream_indexing and (ss.download_running or ss.index_running):
+        st.info(
+            (
+                f"Indexando em paralelo... adicionados={ss.index_added} "
+                f"pulados={ss.index_skipped}"
+            ),
+        )
 
 
 def _render_results_section() -> None:
@@ -203,6 +287,18 @@ def _render_results_section() -> None:
             with st.expander("Arquivos salvos (recentes)"):
                 for p in ss.download_saved[-20:]:
                     st.write(p)
+    if ss.stream_indexing:
+        cols3 = st.columns(2)
+        with cols3[0]:
+            if ss.index_errors:
+                with st.expander("Erros de indexação (recentes)"):
+                    for err in ss.index_errors[-50:]:
+                        st.write(f"- {err}")
+        with cols3[1]:
+            st.caption(
+                f"Resumo da indexação: adicionados={ss.index_added}, "
+                f"pulados={ss.index_skipped}",
+            )
 
 
 def main() -> None:
