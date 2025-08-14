@@ -20,6 +20,18 @@ import streamlit as st
 from dotenv import load_dotenv
 
 
+def _set_favicon(url: str) -> None:
+    """Inject favicon links so the tab icon renders crisply without clipping."""
+    st.markdown(
+        f"""
+        <link rel=\"icon\" href=\"{url}\" sizes=\"16x16\" />
+        <link rel=\"icon\" href=\"{url}\" sizes=\"32x32\" />
+        <link rel=\"shortcut icon\" href=\"{url}\" />
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _ensure_state() -> None:
     """Initialize minimal session state for presentation-only dashboard."""
     ss = st.session_state
@@ -44,7 +56,6 @@ def _setup_page() -> None:
     load_dotenv()
     st.set_page_config(
         page_title="YouTube Summary",
-        page_icon="🏠",
         layout="wide",
         initial_sidebar_state="expanded",
     )
@@ -57,6 +68,10 @@ def _setup_page() -> None:
     </style>
     """
     st.markdown(hide_streamlit_menu, unsafe_allow_html=True)
+    # Use a proper PNG favicon to avoid oversized/clipped emoji icons in the tab
+    _set_favicon(
+        "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/1f3e0.png",
+    )
     _ensure_state()
     st.title("YouTube Summary • Dashboard")
     st.caption(

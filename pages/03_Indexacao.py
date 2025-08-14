@@ -14,6 +14,18 @@ from dotenv import load_dotenv
 from src.rag import TranscriptRAG
 
 
+def _set_favicon(url: str) -> None:
+    """Inject favicon links so the tab icon renders correctly."""
+    st.markdown(
+        f"""
+        <link rel=\"icon\" href=\"{url}\" sizes=\"16x16\" />
+        <link rel=\"icon\" href=\"{url}\" sizes=\"32x32\" />
+        <link rel=\"shortcut icon\" href=\"{url}\" />
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _ensure_state() -> None:
     ss = st.session_state
     ss.setdefault("transcripts_dir", Path("data/transcripts"))
@@ -41,7 +53,7 @@ def _list_channels(transcripts_dir: Path) -> list[str]:
 def _configure_page() -> None:
     """Load env, set page config and hide Streamlit default menu."""
     load_dotenv()
-    st.set_page_config(page_title="Indexação (RAG)", page_icon="🧠", layout="wide")
+    st.set_page_config(page_title="Indexação (RAG)", layout="wide")
 
     hide_streamlit_menu = """
     <style>
@@ -50,6 +62,11 @@ def _configure_page() -> None:
     </style>
     """
     st.markdown(hide_streamlit_menu, unsafe_allow_html=True)
+    # Proper favicon to avoid oversized/clipped emoji in the browser tab
+    twemoji_base = (
+        "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/"
+    )
+    _set_favicon(twemoji_base + "1f9e0.png")  # brain
     _ensure_state()
 
 

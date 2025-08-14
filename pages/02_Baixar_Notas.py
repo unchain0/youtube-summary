@@ -20,6 +20,18 @@ from src.utils.youtube_helpers import channel_key_from_url, filter_pending_urls
 from src.youtube import YouTubeTranscriptManager
 
 
+def _set_favicon(url: str) -> None:
+    """Inject favicon links so the tab icon renders correctly."""
+    st.markdown(
+        f"""
+        <link rel=\"icon\" href=\"{url}\" sizes=\"16x16\" />
+        <link rel=\"icon\" href=\"{url}\" sizes=\"32x32\" />
+        <link rel=\"shortcut icon\" href=\"{url}\" />
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _start_thread_with_streamlit_ctx(t: threading.Thread) -> None:
     """Start a thread with Streamlit ScriptRunContext to avoid console warnings."""
     add_script_run_ctx(t)
@@ -303,7 +315,7 @@ def _render_results_section() -> None:
 
 def main() -> None:
     """Render the page to download YouTube transcripts with progress."""
-    st.set_page_config(page_title="Baixar Notas", page_icon="⬇️", layout="wide")
+    st.set_page_config(page_title="Baixar Notas", layout="wide")
 
     hide_streamlit_menu = """
     <style>
@@ -312,6 +324,11 @@ def main() -> None:
     </style>
     """
     st.markdown(hide_streamlit_menu, unsafe_allow_html=True)
+    # Proper favicon to avoid oversized/clipped emoji in the browser tab
+    twemoji_base = (
+        "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/"
+    )
+    _set_favicon(twemoji_base + "2b07.png")
 
     _ensure_state()
     _render_sidebar_nav()

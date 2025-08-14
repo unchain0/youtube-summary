@@ -11,14 +11,21 @@ from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
+from groq import Groq
 
 from src.rag import TranscriptRAG
 
-# Optional Groq SDK import for dynamic model listing
-try:
-    from groq import Groq as _Groq
-except Exception:  # noqa: BLE001
-    _Groq = None  # type: ignore[assignment]
+
+# Helper to inject crisp favicon links (avoid oversized/clipped emoji)
+def _set_favicon(url: str) -> None:
+    st.markdown(
+        f"""
+        <link rel=\"icon\" href=\"{url}\" sizes=\"16x16\" />
+        <link rel=\"icon\" href=\"{url}\" sizes=\"32x32\" />
+        <link rel=\"shortcut icon\" href=\"{url}\" />
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _ensure_state() -> None:
@@ -47,9 +54,9 @@ def _get_rag() -> TranscriptRAG:
 def _list_groq_models(api_key: str | None) -> list[str]:
     """Fetch Groq models via SDK. Returns [] on error or missing key."""
     try:
-        if not api_key or _Groq is None:
+        if not api_key:
             return []
-        client = _Groq(api_key=api_key)
+        client = Groq(api_key=api_key)
         resp = client.models.list()
         data = getattr(resp, "data", None)
         items = data if data is not None else getattr(resp, "models", [])
@@ -128,7 +135,7 @@ def _render_sidebar() -> None:
 def main() -> None:
     """Render a simple chat interface backed by the RAG index."""
     load_dotenv()
-    st.set_page_config(page_title="Chat", page_icon="💬", layout="wide")
+    st.set_page_config(page_title="Chat", layout="wide")
 
     # Hide default Streamlit menu
     hide_streamlit_menu = """
@@ -138,6 +145,9 @@ def main() -> None:
     </style>
     """
     st.markdown(hide_streamlit_menu, unsafe_allow_html=True)
+    # Proper favicon to avoid oversized/clipped emoji in the browser tab
+    twemoji_base = "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/"
+    _set_favicon(twemoji_base + "1f4ac.png")  # speech balloon
 
     _ensure_state()
     _render_sidebar()
