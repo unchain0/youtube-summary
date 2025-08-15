@@ -18,7 +18,83 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from loguru import logger as loguru_logger
+try:
+    # Prefer Loguru when available
+    from loguru import logger as loguru_logger  # type: ignore[import-not-found]
+except Exception:  # noqa: BLE001 - fallback when loguru isn't installed
+    # Minimal stdlib-based logger shim exposing a Loguru-like API used here
+    import logging as _logging
+
+    class _FallbackLogger:
+        def __init__(self) -> None:
+            self._logger = _logging.getLogger("app")
+            if not self._logger.handlers:
+                handler = _logging.StreamHandler(sys.stdout)
+                fmt = _logging.Formatter(
+                    "%(asctime)s | %(levelname)s | %(name)s - %(message)s",
+                )
+                handler.setFormatter(fmt)
+                self._logger.addHandler(handler)
+                self._logger.setLevel(_logging.INFO)
+
+        # API compat methods
+        def bind(self, component: str = "-") -> _FallbackLogger:
+            del component
+            return self
+
+        def add(self, *args: object, **kwargs: object) -> int:
+            """No-op; return a dummy handler id."""
+            del args, kwargs
+            return 0
+
+        def remove(self, *args: object, **kwargs: object) -> None:
+            """No-op remove handler."""
+            del args, kwargs
+
+        def debug(self, msg: str, *a: object, **k: object) -> None:
+            del k
+            self._logger.debug(msg.format(*a))
+
+        def info(self, msg: str, *a: object, **k: object) -> None:
+            del k
+            self._logger.info(msg.format(*a))
+
+        def warning(self, msg: str, *a: object, **k: object) -> None:
+            del k
+            self._logger.warning(msg.format(*a))
+
+        def error(self, msg: str, *a: object, **k: object) -> None:
+            del k
+            self._logger.exception(msg.format(*a))
+
+        def success(self, msg: str, *a: object, **k: object) -> None:
+            # Map Loguru's SUCCESS to INFO
+            del k
+            self._logger.info(msg.format(*a))
+
+        def level(self, name: str) -> int:
+            levels = {
+                "TRACE": 5,
+                "DEBUG": 10,
+                "INFO": 20,
+                "SUCCESS": 25,
+                "WARNING": 30,
+                "ERROR": 40,
+                "CRITICAL": 50,
+            }
+            if name in levels:
+                return levels[name]
+            raise ValueError(name)
+
+        def opt(self, *args: object, **kwargs: object) -> _FallbackLogger:
+            del args, kwargs
+            return self
+
+        def log(self, level: object, message: str) -> None:
+            lvl = _logging.INFO if isinstance(level, str) else int(level)
+            self._logger.log(lvl, message)
+
+    loguru_logger = _FallbackLogger()
 
 # Export a logger pre-bound with a default component placeholder
 logger = loguru_logger.bind(component="-")
@@ -61,6 +137,12 @@ def setup_logging(  # noqa: PLR0913
     intercept_stdlib: bool = True,
     backtrace: bool | None = None,
     diagnose: bool | None = None,
+    # Console-only suppression of noisy third-party logs
+    console_exclude: tuple[str, ...] = (
+        "httpx",
+        "httpcore",
+        "urllib3",
+    ),
 ) -> None:
     """Configure Loguru sinks for the app.
 
@@ -90,6 +172,9 @@ def setup_logging(  # noqa: PLR0913
     )
 
     # Console sink (human facing)
+    def _console_filter(record: dict) -> bool:
+        name = record.get("name", "")
+        return not any(name.startswith(pfx) for pfx in console_exclude)
     def _console_sink(message: str) -> None:
         sys.stdout.write(message)
         sys.stdout.flush()
@@ -102,6 +187,7 @@ def setup_logging(  # noqa: PLR0913
         diagnose=diagnose,
         format=fmt,
         serialize=False,
+        filter=_console_filter,
     )
 
     # Files base path
@@ -158,9 +244,9 @@ def setup_logging(  # noqa: PLR0913
         format=fmt,
     )
 
-    # Optionally intercept stdlib logging
+    # Optionally intercept stdlib logging (root + selected noisy libs)
     if intercept_stdlib:
-        intercept_stdlib_logging()
+        intercept_stdlib_logging(names=("", *console_exclude))
 
 
 def get_logger(component: str | None = None) -> object:
@@ -183,7 +269,8 @@ class _InterceptHandler(logging.Handler):
             level = record.levelname
         except ValueError:
             level = record.levelno
-        loguru_logger.opt(depth=6, exception=record.exc_info).log(
+        # Emit via the pre-bound 'logger' so 'extra[component]' is always present
+        logger.opt(depth=6, exception=record.exc_info).log(
             level,
             record.getMessage(),
         )

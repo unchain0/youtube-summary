@@ -11,6 +11,7 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
+from src.exceptions import VectorStoreAddError
 from src.rag import TranscriptRAG
 from src.utils.logging_setup import get_logger, setup_logging
 
@@ -145,6 +146,12 @@ def _render_rebuild_section() -> None:
                 )
                 progress.progress(1.0)
                 status.write("Concluído.")
+        except VectorStoreAddError as e:
+            logger.exception("Reindex failed due to vector store add error")
+            st.error(
+                "Falha ao adicionar documentos ao índice vetorial. "
+                f"Tente recriar o índice do zero. Detalhes: {e}",
+            )
         except Exception as e:
             logger.exception("Reindex failed")
             st.error(f"Falha ao reindexar: {e}")
@@ -167,7 +174,7 @@ def _render_rebuild_section() -> None:
             )
 
 
-def _render_incremental_update_section() -> None:
+def _render_incremental_update_section() -> None:  # noqa: C901, PLR0915
     """Incremental update section with per-channel or all-channels options."""
     st.divider()
     st.subheader("Atualizar canais (incremental)")
@@ -195,6 +202,11 @@ def _render_incremental_update_section() -> None:
                     a, s = rag.add_channel(st.session_state.transcripts_dir / ch)
                     total_added += a
                     total_skipped += s
+        except VectorStoreAddError as e:
+            logger.exception("Incremental update (selected) failed: vector store add")
+            st.error(
+                f"Falha ao atualizar (índice vetorial). Detalhes: {e}",
+            )
         except Exception as e:
             logger.exception("Incremental update (selected) failed")
             st.error(f"Falha ao atualizar: {e}")
@@ -222,6 +234,11 @@ def _render_incremental_update_section() -> None:
                     a, s = rag.add_channel(st.session_state.transcripts_dir / ch)
                     total_added += a
                     total_skipped += s
+        except VectorStoreAddError as e:
+            logger.exception("Incremental update all failed: vector store add")
+            st.error(
+                f"Falha ao atualizar todos (índice vetorial). Detalhes: {e}",
+            )
         except Exception as e:
             logger.exception("Incremental update all failed")
             st.error(f"Falha ao atualizar todos: {e}")
@@ -253,6 +270,12 @@ def _render_channel_management() -> None:
                 try:
                     logger.info("Reindex single channel start", extra={"channel": ch})
                     a, s = _get_rag().add_channel(st.session_state.transcripts_dir / ch)
+                except VectorStoreAddError as e:
+                    logger.exception(
+                        "Reindex single channel failed: vector store add",
+                        extra={"channel": ch},
+                    )
+                    st.error(f"Falha ao reindexar {ch} (índice vetorial): {e}")
                 except Exception as e:
                     logger.exception(
                         "Reindex single channel failed",

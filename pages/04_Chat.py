@@ -13,6 +13,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from groq import Groq
 
+from src.exceptions import ModelInitializationError
 from src.rag import TranscriptRAG
 from src.utils.logging_setup import get_logger, setup_logging
 
@@ -157,7 +158,7 @@ def _render_sidebar() -> None:
         _render_groq_model_selector()
 
 
-def main() -> None:
+def main() -> None:  # noqa: PLR0915
     """Render a simple chat interface backed by the RAG index."""
     load_dotenv()
     _ensure_logging()
@@ -217,6 +218,15 @@ def main() -> None:
                         prompt.strip(),
                         k=st.session_state.top_k,
                     )
+            except ModelInitializationError as e:
+                logger.exception("Chat query failed during model initialization")
+                err = (
+                    "Falha ao inicializar o modelo (Groq/Embeddings). Verifique as "
+                    f"variáveis de ambiente e o nome do modelo. Detalhes: {e}"
+                )
+                st.error(err)
+                st.session_state.chat.append({"role": "user", "content": prompt})
+                st.session_state.chat.append({"role": "assistant", "content": err})
             except Exception as e:
                 logger.exception("Chat query failed")
                 err = (

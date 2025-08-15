@@ -1,8 +1,13 @@
 """Tests for RAG indexing and retrieval helpers."""
 
-from pathlib import Path
+from __future__ import annotations
 
-import pytest
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
 
 import src.rag as rag_mod
 
@@ -49,7 +54,7 @@ class FakeChroma:
         embedding: object,
         persist_directory: str,
         collection_name: str,
-    ) -> "FakeChroma":
+    ) -> FakeChroma:
         """Construct a FakeChroma from provided documents."""
         inst = cls(
             embedding_function=embedding,

@@ -10,7 +10,8 @@ import urllib.parse as _up
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .logging_setup import logger
+from src.exceptions import YtDlpError
+from src.utils.logging_setup import logger
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -61,10 +62,10 @@ def _run_yt_dlp(
             )
         except Exception as err:
             msg = "yt-dlp execution failed"
-            raise RuntimeError(msg) from err
+            raise YtDlpError(msg) from err
     except Exception as err:
         msg = "yt-dlp execution failed"
-        raise RuntimeError(msg) from err
+        raise YtDlpError(msg) from err
 
 
 def _build_proxy_url() -> str | None:
@@ -133,7 +134,7 @@ def video_id_from_url(url_or_id: str) -> str:
             vid = lines[0] if lines else ""
             if vid:
                 return vid
-        except (RuntimeError, IndexError) as err:
+        except (YtDlpError, IndexError) as err:
             logger.debug(
                 "yt-dlp --get-id failed for {}: {}: {}",
                 url_or_id,
@@ -300,7 +301,7 @@ def download_and_read_subtitles(  # noqa: C901, PLR0911, PLR0912
         try:
             # Confine yt-dlp temp and working dir to the temporary folder
             res = _run_yt_dlp(cmd, cwd=tdir, temp_dir=tdir)
-        except RuntimeError as e:
+        except YtDlpError as e:
             logger.debug(
                 "yt-dlp failed to get subs for {} (langs={}): {}: {}",
                 url_or_id,
@@ -341,7 +342,7 @@ def download_and_read_subtitles(  # noqa: C901, PLR0911, PLR0912
             ]
             try:
                 res_any = _run_yt_dlp(cmd_any, cwd=tdir, temp_dir=tdir)
-            except RuntimeError as e:
+            except YtDlpError as e:
                 logger.debug(
                     "yt-dlp failed to get any subs for {}: {}: {}",
                     url_or_id,

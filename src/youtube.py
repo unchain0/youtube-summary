@@ -8,27 +8,54 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NoReturn, Protocol, TypeVar
 
-from youtube_transcript_api import (
-    NoTranscriptFound,
-    RequestBlocked,
-    TranscriptsDisabled,
-    YouTubeTranscriptApi,
-)
-
 try:
-    from youtube_transcript_api.proxies import GenericProxyConfig
-except ImportError:  # pragma: no cover - optional dependency surface
+    from youtube_transcript_api import (
+        AgeRestricted,
+        IpBlocked,
+        NoTranscriptFound,
+        RequestBlocked,
+        TranscriptsDisabled,
+        YouTubeTranscriptApi,
+    )
+    try:
+        from youtube_transcript_api.proxies import GenericProxyConfig
+    except ImportError:  # pragma: no cover - optional proxy support
+        GenericProxyConfig = None  # type: ignore[assignment]
+except ImportError:  # pragma: no cover - optional dependency fallback
+    # Define minimal local stand-ins so module import succeeds without the package
+    class AgeRestricted(Exception):  # noqa: N818 - mirror external API name
+        """Stub for youtube_transcript_api.AgeRestricted."""
+
+    class IpBlocked(Exception):  # noqa: N818 - mirror external API name
+        """Stub for youtube_transcript_api.IpBlocked."""
+
+    class NoTranscriptFound(Exception):  # noqa: N818 - mirror external API name
+        """Stub for youtube_transcript_api.NoTranscriptFound."""
+
+    class RequestBlocked(Exception):  # noqa: N818 - mirror external API name
+        """Stub for youtube_transcript_api.RequestBlocked."""
+
+    class TranscriptsDisabled(Exception):  # noqa: N818 - mirror external API name
+        """Stub for youtube_transcript_api.TranscriptsDisabled."""
+
+    class YouTubeTranscriptApi:  # type: ignore[override]
+        """Minimal stub mirroring the interface used by this module."""
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            """Initialize a no-op stub instance."""
+            del args, kwargs
+
+        def list(self, video_id: str) -> object:
+            """Raise to indicate the real package is not installed."""
+            msg = (
+                "youtube_transcript_api is not installed; this is a stub. "
+                f"Tried to list transcripts for {video_id!r}."
+            )
+            raise RuntimeError(msg)
+
     GenericProxyConfig = None  # type: ignore[assignment]
 
-# Newer versions also expose IpBlocked; import if available for better handling
-try:  # pragma: no cover - optional dependency surface
-    from youtube_transcript_api import IpBlocked
-except ImportError:  # pragma: no cover - best-effort compatibility
-
-    class IpBlocked(RequestBlocked):
-        """Compatibility stub for youtube-transcript-api versions without IpBlocked."""
-
-
+from .exceptions import SkipVideoError, _UseSubsFallbackError
 from .utils.logging_setup import logger
 from .utils.youtube_helpers import (
     download_and_read_subtitles as _download_subs,
@@ -60,14 +87,6 @@ class _FetchedTranscriptProtocol(Protocol):
 
 class _IterableSnippets(Protocol, Iterable[_Snippet]):
     """Protocol for iterables yielding snippet-like objects."""
-
-
-class _UseSubsFallbackError(Exception):
-    """Internal control-flow exception carrying subtitles text."""
-
-    def __init__(self, text: str) -> None:
-        self.text = text
-        super().__init__("Use subtitles fallback")
 
 
 class _HasFetch(Protocol):
@@ -151,6 +170,7 @@ class YouTubeTranscriptManager:
             "login_required",
             "subscriber_only",
             "premium_only",
+            "age_restricted",
         }
         for line in result.stdout.strip().split("\n"):
             if not line:
@@ -191,13 +211,14 @@ class YouTubeTranscriptManager:
     def _with_retries(self, fn: Callable[[], T], *, attempts: int = 3) -> T:
         """Execute a callable with small backoff retries for transient failures.
 
-        Does not retry RequestBlocked to avoid hammering blocked endpoints.
+        Does not retry RequestBlocked/IpBlocked/TranscriptsDisabled to avoid
+        hammering endpoints or waiting when transcripts are disabled.
         """
         last_err: Exception | None = None
         for i in range(attempts):
             try:
                 return fn()
-            except (RequestBlocked, IpBlocked) as e:
+            except (RequestBlocked, IpBlocked, TranscriptsDisabled) as e:
                 last_err = e
                 break
             except Exception as e:  # noqa: BLE001 - retry unknown transient errors
@@ -237,9 +258,14 @@ class YouTubeTranscriptManager:
 
     def _fetch_entries_with_retries(self, transcript: _HasFetch) -> list[Entry]:
         """Fetch transcript entries preserving formatting with retry logic."""
-        fetched = self._with_retries(
-            lambda: transcript.fetch(preserve_formatting=True),
-        )
+        try:
+            fetched = self._with_retries(
+                lambda: transcript.fetch(True),  # noqa: FBT003 - positional bool required for test doubles
+            )
+        except AgeRestricted as e:  # pragma: no cover - runtime-only path
+            # Will be handled by caller to decide about fallback or skip
+            msg_ar = "Age-restricted while fetching entries"
+            raise SkipVideoError(msg_ar) from e
         return self._normalize_entries(fetched)
 
     def _normalize_entries(self, data: object) -> list[Entry]:
@@ -299,10 +325,181 @@ class YouTubeTranscriptManager:
     ) -> NoReturn:
         """Either raise RuntimeError or raise control-flow to use subtitles text."""
         if use_subs_fallback:
-            subs_text = _download_subs(url_or_id, languages=languages)
+            subs_text = _download_subs(url_or_id, languages)
             if subs_text:
                 raise _UseSubsFallbackError(subs_text)
         raise RuntimeError(msg) from err
+
+    def _subs_or_skip(
+        self,
+        url_or_id: str,
+        languages: list[str],
+        *,
+        use_subs_fallback: bool,
+        skip_msg: str,
+        err: Exception | None = None,
+    ) -> str:
+        """Try subtitles fallback else raise SkipVideoError.
+
+        Returns subtitles text when available and fallback enabled, otherwise
+        raises SkipVideoError with the provided message.
+        """
+        if use_subs_fallback:
+            subs_text = _download_subs(url_or_id, languages)
+            if subs_text:
+                return subs_text
+        raise SkipVideoError(skip_msg) from err
+
+    def _list_or_fallback(
+        self,
+        api: YouTubeTranscriptApi,
+        video_id: str,
+        url_or_id: str,
+        languages: list[str],
+        *,
+        use_subs_fallback: bool,
+    ) -> _HasFinders:
+        """List transcripts, handling known errors and fallback inline.
+
+        - AgeRestricted -> raise SkipVideoError for unified handling upstream.
+        - RequestBlocked/IpBlocked and generic errors -> delegate to
+          _fallback_or_raise which may raise _UseSubsFallbackError or RuntimeError.
+        """
+        try:
+            return self._list_transcripts_with_retries(api, video_id)
+        except AgeRestricted as e:
+            msg_ar = f"Age-restricted: {video_id}"
+            raise SkipVideoError(msg_ar) from e
+        except TranscriptsDisabled as e:
+            # Treat as a known, non-actionable condition for fetching transcripts.
+            # We'll allow the caller to try subtitles fallback or skip gracefully.
+            msg = f"Transcripts disabled for video {video_id}"
+            raise SkipVideoError(msg) from e
+        except (RequestBlocked, IpBlocked) as e:
+            msg = f"Transcript request blocked for video {video_id}: {e}"
+            self._fallback_or_raise(
+                url_or_id,
+                languages,
+                use_subs_fallback=use_subs_fallback,
+                msg=msg,
+                err=e,
+            )
+        except Exception as e:  # noqa: BLE001
+            msg = f"Failed to list transcripts for video {video_id}: {e}"
+            self._fallback_or_raise(
+                url_or_id,
+                languages,
+                use_subs_fallback=use_subs_fallback,
+                msg=msg,
+                err=e,
+            )
+        # Unreachable for type-checkers; _fallback_or_raise never returns.
+        unreachable_msg = "Unreachable after _fallback_or_raise"
+        raise RuntimeError(unreachable_msg)
+
+    def _ensure_list_non_empty(
+        self,
+        transcript_list: _HasFinders,
+        url_or_id: str,
+        languages: list[str],
+        *,
+        use_subs_fallback: bool,
+        video_id: str,
+    ) -> None:
+        """Guard that the transcript list is non-empty or fallback/raise."""
+        if not list(transcript_list):
+            msg = f"No transcripts available for video {video_id}"
+            self._fallback_or_raise(
+                url_or_id,
+                languages,
+                use_subs_fallback=use_subs_fallback,
+                msg=msg,
+            )
+
+    def _ensure_transcript_found(
+        self,
+        transcript: _HasFetch | None,
+        url_or_id: str,
+        languages: list[str],
+        *,
+        use_subs_fallback: bool,
+        video_id: str,
+    ) -> _HasFetch:
+        """Guard that a transcript object was selected or fallback/raise."""
+        if transcript is None:
+            msg = f"No valid transcript found for video {video_id}"
+            self._fallback_or_raise(
+                url_or_id,
+                languages,
+                use_subs_fallback=use_subs_fallback,
+                msg=msg,
+            )
+            # _fallback_or_raise never returns; return to satisfy type-checkers
+            msg_unreach = "unreachable"
+            raise RuntimeError(msg_unreach)
+        return transcript
+
+    def _ensure_text_not_empty(
+        self,
+        text: str,
+        url_or_id: str,
+        languages: list[str],
+        *,
+        use_subs_fallback: bool,
+        video_id: str,
+    ) -> None:
+        """Guard that assembled text is non-empty or fallback/raise."""
+        if not text:
+            msg = f"Empty transcript for video {video_id}"
+            self._fallback_or_raise(
+                url_or_id,
+                languages,
+                use_subs_fallback=use_subs_fallback,
+                msg=msg,
+            )
+
+    def _fetch_entries_or_fallback(
+        self,
+        transcript: _HasFetch,
+        url_or_id: str,
+        languages: list[str],
+        *,
+        use_subs_fallback: bool,
+        video_id: str,
+    ) -> list[Entry]:
+        """Fetch transcript entries or perform fallback/raise on known errors."""
+        try:
+            return self._fetch_entries_with_retries(transcript)
+        except (TranscriptsDisabled, NoTranscriptFound) as e:
+            msg = f"Transcript unavailable for video {video_id}: {e}"
+            self._fallback_or_raise(
+                url_or_id,
+                languages,
+                use_subs_fallback=use_subs_fallback,
+                msg=msg,
+                err=e,
+            )
+        except SkipVideoError as e:
+            # Attempt subtitles fallback or raise RuntimeError
+            self._fallback_or_raise(
+                url_or_id,
+                languages,
+                use_subs_fallback=use_subs_fallback,
+                msg=str(e),
+                err=e,
+            )
+        except Exception as e:  # noqa: BLE001
+            msg = f"Failed to fetch transcript for video {video_id}: {e}"
+            self._fallback_or_raise(
+                url_or_id,
+                languages,
+                use_subs_fallback=use_subs_fallback,
+                msg=msg,
+                err=e,
+            )
+        # _fallback_or_raise never returns; satisfy type-checkers
+        msg_unreach = "unreachable"
+        raise RuntimeError(msg_unreach)
 
     def fetch_transcript(
         self,
@@ -320,70 +517,51 @@ class YouTubeTranscriptManager:
             video_id = _vid_from_url(url_or_id)
             languages = languages or ["pt", "en"]
 
-            # 1) List transcripts
+            # 1) List transcripts (fallback/blocked handled in helper)
             try:
-                transcript_list = self._list_transcripts_with_retries(ytt_api, video_id)
-            except (RequestBlocked, IpBlocked) as e:
-                msg = f"Transcript request blocked for video {video_id}: {e}"
-                self._fallback_or_raise(
+                transcript_list = self._list_or_fallback(
+                    ytt_api,
+                    video_id,
                     url_or_id,
                     languages,
                     use_subs_fallback=use_subs_fallback,
-                    msg=msg,
-                    err=e,
                 )
-            except Exception as e:  # noqa: BLE001
-                msg = f"Failed to list transcripts for video {video_id}: {e}"
-                self._fallback_or_raise(
+            except SkipVideoError as e:
+                return self._subs_or_skip(
                     url_or_id,
                     languages,
                     use_subs_fallback=use_subs_fallback,
-                    msg=msg,
+                    skip_msg=str(e),
                     err=e,
                 )
 
             # 2) Handle empty list
-            if not list(transcript_list):
-                msg = f"No transcripts available for video {video_id}"
-                self._fallback_or_raise(
-                    url_or_id,
-                    languages,
-                    use_subs_fallback=use_subs_fallback,
-                    msg=msg,
-                )
+            self._ensure_list_non_empty(
+                transcript_list,
+                url_or_id,
+                languages,
+                use_subs_fallback=use_subs_fallback,
+                video_id=video_id,
+            )
 
             # 3) Select best transcript
             transcript = self._select_transcript(transcript_list, languages)
-            if transcript is None:
-                msg = f"No valid transcript found for video {video_id}"
-                self._fallback_or_raise(
-                    url_or_id,
-                    languages,
-                    use_subs_fallback=use_subs_fallback,
-                    msg=msg,
-                )
+            transcript = self._ensure_transcript_found(
+                transcript,
+                url_or_id,
+                languages,
+                use_subs_fallback=use_subs_fallback,
+                video_id=video_id,
+            )
 
             # 4) Fetch entries
-            try:
-                entries = self._fetch_entries_with_retries(transcript)
-            except (TranscriptsDisabled, NoTranscriptFound) as e:
-                msg = f"Transcript unavailable for video {video_id}: {e}"
-                self._fallback_or_raise(
-                    url_or_id,
-                    languages,
-                    use_subs_fallback=use_subs_fallback,
-                    msg=msg,
-                    err=e,
-                )
-            except Exception as e:  # noqa: BLE001
-                msg = f"Failed to fetch transcript for video {video_id}: {e}"
-                self._fallback_or_raise(
-                    url_or_id,
-                    languages,
-                    use_subs_fallback=use_subs_fallback,
-                    msg=msg,
-                    err=e,
-                )
+            entries = self._fetch_entries_or_fallback(
+                transcript,
+                url_or_id,
+                languages,
+                use_subs_fallback=use_subs_fallback,
+                video_id=video_id,
+            )
 
             # 5) Assemble text
             text = self._assemble_text(entries)
@@ -483,6 +661,6 @@ class YouTubeTranscriptManager:
                         subs_fallback=subs_fallback,
                     ),
                 )
-            except (RuntimeError, OSError) as e:
+            except (SkipVideoError, RuntimeError, OSError) as e:
                 logger.warning("Failed transcript for {}: {}", url, e)
         return saved
