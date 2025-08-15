@@ -19,14 +19,35 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pre-commit>=4.2.0", "ruff>=0.11.5", "pytest>=8.3.2", "mypy>=1.17.1"]
+dev = [
+    "pre-commit>=4.2.0",
+    "ruff>=0.11.5",
+    "pytest>=8.3.2",
+    "mypy>=1.17.1",
+    "pandas-stubs>=2.3.0.250703",
+]
 
-[tool.ruff.lint]
-select = ["ALL"]
-ignore = ["D203", "D213"]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101"]
-
-[tool.mypy]
-strict = true
+[tool.ruff]
+format.preview = true
+format.docstring-code-format = true
+lint.select = ["ALL"]
+lint.ignore = [
+    "ANN401", # Any as type annotation is allowed
+    "C901",   # complex structure
+    "COM812", # Conflict with formatter
+    "CPY",    # No copyright statements
+    "D",      # limited documentation
+    "DOC",    # limited documentation
+    "FIX002", # line contains to do
+    "ISC001", # Conflict with formatter
+    "S101",   # can use asserting
+    "TD002",  # missing to do author
+    "TD003",  # missing to do a link
+    "TD004",  # missing colon in to do
+    "FBT001", # Boolean-typed positional argument in function definition
+    "FBT003", # Boolean positional value in function call
+    "D203",
+    "D213",
+    "S404",   # Use `subprocess.run` instead of `subprocess.call`
+]
+lint.preview = true
