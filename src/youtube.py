@@ -6,66 +6,21 @@ import subprocess
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, NoReturn, Protocol, TypeVar
+from typing import Any, NoReturn, Protocol, TypeVar, cast
 
-try:
-    from youtube_transcript_api import (
-        AgeRestricted,
-        IpBlocked,
-        NoTranscriptFound,
-        RequestBlocked,
-        TranscriptsDisabled,
-        YouTubeTranscriptApi,
-    )
-    try:
-        from youtube_transcript_api.proxies import GenericProxyConfig
-    except ImportError:  # pragma: no cover - optional proxy support
-        GenericProxyConfig = None  # type: ignore[assignment]
-except ImportError:  # pragma: no cover - optional dependency fallback
-    # Define minimal local stand-ins so module import succeeds without the package
-    class AgeRestricted(Exception):  # noqa: N818 - mirror external API name
-        """Stub for youtube_transcript_api.AgeRestricted."""
-
-    class IpBlocked(Exception):  # noqa: N818 - mirror external API name
-        """Stub for youtube_transcript_api.IpBlocked."""
-
-    class NoTranscriptFound(Exception):  # noqa: N818 - mirror external API name
-        """Stub for youtube_transcript_api.NoTranscriptFound."""
-
-    class RequestBlocked(Exception):  # noqa: N818 - mirror external API name
-        """Stub for youtube_transcript_api.RequestBlocked."""
-
-    class TranscriptsDisabled(Exception):  # noqa: N818 - mirror external API name
-        """Stub for youtube_transcript_api.TranscriptsDisabled."""
-
-    class YouTubeTranscriptApi:  # type: ignore[override]
-        """Minimal stub mirroring the interface used by this module."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize a no-op stub instance."""
-            del args, kwargs
-
-        def list(self, video_id: str) -> object:
-            """Raise to indicate the real package is not installed."""
-            msg = (
-                "youtube_transcript_api is not installed; this is a stub. "
-                f"Tried to list transcripts for {video_id!r}."
-            )
-            raise RuntimeError(msg)
-
-    GenericProxyConfig = None  # type: ignore[assignment]
+from youtube_transcript_api import (
+    AgeRestricted,
+    IpBlocked,
+    NoTranscriptFound,
+    RequestBlocked,
+    TranscriptsDisabled,
+    YouTubeTranscriptApi,
+)
+from youtube_transcript_api.proxies import GenericProxyConfig
 
 from .exceptions import SkipVideoError, _UseSubsFallbackError
 from .utils.logging_setup import logger
-from .utils.youtube_helpers import (
-    download_and_read_subtitles as _download_subs,
-)
-from .utils.youtube_helpers import (
-    is_supported_video_url as _is_supported,
-)
-from .utils.youtube_helpers import (
-    video_id_from_url as _vid_from_url,
-)
+from .utils.youtube_helpers import download_subs, is_supported, vid_from_url
 
 T = TypeVar("T")
 Entry = dict[str, Any]
@@ -94,7 +49,7 @@ class _HasFetch(Protocol):
 
     def fetch(
         self,
-        preserve_formatting: bool = ...,  # noqa: FBT001
+        preserve_formatting: bool = ...,
     ) -> list[Entry] | _FetchedTranscriptProtocol | _IterableSnippets: ...
 
 
@@ -106,6 +61,12 @@ class _HasFinders(Protocol, Iterable[Any]):
     def find_generated_transcript(self, languages: list[str]) -> _HasFetch: ...
 
     def find_transcript(self, languages: list[str]) -> _HasFetch: ...
+
+
+class _YouTubeTranscriptApiProto(Protocol):
+    """Protocol for the minimal API surface we use from YouTubeTranscriptApi."""
+
+    def list(self, video_id: str) -> _HasFinders: ...
 
 
 class YouTubeTranscriptManager:
@@ -121,7 +82,8 @@ class YouTubeTranscriptManager:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_video_urls_from_channel(self, channel_url: str) -> list[str]:
+    @staticmethod
+    def get_video_urls_from_channel(channel_url: str) -> list[str]:
         """Return video URLs from a channel.
 
         Skips private/members-only when possible. Uses yt-dlp to print
@@ -182,33 +144,35 @@ class YouTubeTranscriptManager:
                     logger.debug("Restricted video ({}): {}", avail, url)
                     continue
                 url = url.strip()
-                if not _is_supported(url):
+                if not is_supported(url):
                     logger.debug("Unsupported content skipped: {}", url)
                     continue
                 urls.append(url)
             else:
                 # Fallback: only URL was printed; keep it
                 url = line.strip()
-                if not _is_supported(url):
+                if not is_supported(url):
                     logger.debug("Unsupported content skipped: {}", url)
                     continue
                 urls.append(url)
         return urls
 
-    # video ID extraction is provided by youtube_helpers.video_id_from_url
-
-    def _create_ytt_api(self) -> YouTubeTranscriptApi:
+    @staticmethod
+    def _create_ytt_api() -> _YouTubeTranscriptApiProto:
         """Create a YouTubeTranscriptApi client honoring HTTP proxy if set."""
         http_url = os.getenv("HTTP_URL", "").strip()
-        if GenericProxyConfig is not None and http_url:
-            return YouTubeTranscriptApi(
+        if http_url:
+            api_obj = YouTubeTranscriptApi(
                 proxy_config=GenericProxyConfig(
                     http_url=http_url or None,
                 ),
             )
-        return YouTubeTranscriptApi()
+        else:
+            api_obj = YouTubeTranscriptApi()
+        return cast("_YouTubeTranscriptApiProto", api_obj)
 
-    def _with_retries(self, fn: Callable[[], T], *, attempts: int = 3) -> T:
+    @staticmethod
+    def _with_retries(fn: Callable[[], T], *, attempts: int = 3) -> T:
         """Execute a callable with small backoff retries for transient failures.
 
         Does not retry RequestBlocked/IpBlocked/TranscriptsDisabled to avoid
@@ -233,14 +197,14 @@ class YouTubeTranscriptManager:
 
     def _list_transcripts_with_retries(
         self,
-        api: YouTubeTranscriptApi,
+        api: _YouTubeTranscriptApiProto,
         video_id: str,
     ) -> _HasFinders:
         """List transcripts for a video with retry logic."""
         return self._with_retries(lambda: api.list(video_id))
 
+    @staticmethod
     def _select_transcript(
-        self,
         transcript_list: _HasFinders,
         languages: list[str],
     ) -> _HasFetch | None:
@@ -260,7 +224,7 @@ class YouTubeTranscriptManager:
         """Fetch transcript entries preserving formatting with retry logic."""
         try:
             fetched = self._with_retries(
-                lambda: transcript.fetch(True),  # noqa: FBT003 - positional bool required for test doubles
+                lambda: transcript.fetch(True),
             )
         except AgeRestricted as e:  # pragma: no cover - runtime-only path
             # Will be handled by caller to decide about fallback or skip
@@ -268,7 +232,8 @@ class YouTubeTranscriptManager:
             raise SkipVideoError(msg_ar) from e
         return self._normalize_entries(fetched)
 
-    def _normalize_entries(self, data: object) -> list[Entry]:
+    @staticmethod
+    def _normalize_entries(data: object) -> list[Entry]:
         """Normalize various fetch return types to a list of dict entries.
 
         Supports both legacy list-of-dicts and the new FetchedTranscript object
@@ -285,11 +250,11 @@ class YouTubeTranscriptManager:
         if isinstance(data, dict):
             return [data]
         try:
-            iterator = iter(data)  # type: ignore[arg-type]
+            iterator = iter(cast("Iterable[object]", data))
         except Exception:  # noqa: BLE001
             return []
         out: list[Entry] = []
-        for item in iterator:  # type: ignore[assignment]
+        for item in iterator:
             if isinstance(item, dict):
                 out.append(item)
             else:
@@ -306,7 +271,8 @@ class YouTubeTranscriptManager:
                     )
         return out
 
-    def _assemble_text(self, entries: Sequence[Mapping[str, Any]]) -> str:
+    @staticmethod
+    def _assemble_text(entries: Sequence[Mapping[str, Any]]) -> str:
         """Join non-empty 'text' fields from transcript entries."""
         return " ".join(
             str(entry.get("text"))  # ensure str join
@@ -314,8 +280,8 @@ class YouTubeTranscriptManager:
             if entry.get("text")
         ).strip()
 
+    @staticmethod
     def _fallback_or_raise(
-        self,
         url_or_id: str,
         languages: list[str],
         *,
@@ -325,13 +291,13 @@ class YouTubeTranscriptManager:
     ) -> NoReturn:
         """Either raise RuntimeError or raise control-flow to use subtitles text."""
         if use_subs_fallback:
-            subs_text = _download_subs(url_or_id, languages)
+            subs_text = download_subs(url_or_id, languages)
             if subs_text:
                 raise _UseSubsFallbackError(subs_text)
         raise RuntimeError(msg) from err
 
+    @staticmethod
     def _subs_or_skip(
-        self,
         url_or_id: str,
         languages: list[str],
         *,
@@ -345,14 +311,14 @@ class YouTubeTranscriptManager:
         raises SkipVideoError with the provided message.
         """
         if use_subs_fallback:
-            subs_text = _download_subs(url_or_id, languages)
+            subs_text = download_subs(url_or_id, languages)
             if subs_text:
                 return subs_text
         raise SkipVideoError(skip_msg) from err
 
     def _list_or_fallback(
         self,
-        api: YouTubeTranscriptApi,
+        api: _YouTubeTranscriptApiProto,
         video_id: str,
         url_or_id: str,
         languages: list[str],
@@ -514,7 +480,7 @@ class YouTubeTranscriptManager:
         """
         try:
             ytt_api = self._create_ytt_api()
-            video_id = _vid_from_url(url_or_id)
+            video_id = vid_from_url(url_or_id)
             languages = languages or ["pt", "en"]
 
             # 1) List transcripts (fallback/blocked handled in helper)
@@ -595,7 +561,7 @@ class YouTubeTranscriptManager:
         channel_key: a filesystem-friendly identifier for the channel
         (e.g., handle or custom name).
         """
-        video_id = _vid_from_url(url_or_id)
+        video_id = vid_from_url(url_or_id)
         channel_dir = self.base_dir / channel_key
         channel_dir.mkdir(parents=True, exist_ok=True)
         out_path = channel_dir / f"{video_id}.txt"
@@ -664,3 +630,16 @@ class YouTubeTranscriptManager:
             except (SkipVideoError, RuntimeError, OSError) as e:
                 logger.warning("Failed transcript for {}: {}", url, e)
         return saved
+
+
+# Explicit re-exports for tests and consumers
+__all__ = [
+    "AgeRestricted",
+    "GenericProxyConfig",
+    "IpBlocked",
+    "NoTranscriptFound",
+    "RequestBlocked",
+    "TranscriptsDisabled",
+    "YouTubeTranscriptApi",
+    "YouTubeTranscriptManager",
+]

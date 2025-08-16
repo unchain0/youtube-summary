@@ -111,7 +111,7 @@ def channel_key_from_url(url: str) -> str:
     return url.rstrip("/").split("/")[-1].lstrip("@") or "channel"
 
 
-def video_id_from_url(url_or_id: str) -> str:
+def vid_from_url(url_or_id: str) -> str:
     """Extract a YouTube video ID or return the input if already an ID.
 
     Fast-path: parse the URL to avoid spawning yt-dlp per video. Falls back to
@@ -147,7 +147,7 @@ def video_id_from_url(url_or_id: str) -> str:
     return url_or_id
 
 
-def is_supported_video_url(url: str) -> bool:
+def is_supported(url: str) -> bool:
     """Return True for supported YouTube URLs, False otherwise.
 
     Supported forms:
@@ -189,9 +189,9 @@ def filter_pending_urls(
         pending: list[str] = []
         for url in urls:
             # Skip unsupported content types (embed, clip, etc.)
-            if not is_supported_video_url(url):
+            if not is_supported(url):
                 continue
-            vid = video_id_from_url(url)
+            vid = vid_from_url(url)
             out_path = transcripts_dir / ch_key / f"{vid}.txt"
             try:
                 if out_path.exists() and out_path.stat().st_size > 0:
@@ -257,7 +257,56 @@ def _srt_to_text(srt: str) -> str:
     return _collapse_consecutive_tokens(joined)
 
 
-def download_and_read_subtitles(  # noqa: C901, PLR0911, PLR0912
+def _find_first_subtitle_file(tdir: Path, vid: str) -> Path | None:
+    """Return the first matching subtitle file for a given video id.
+
+    Prefers VTT over SRT by order.
+    """
+    for ext in ("vtt", "srt"):
+        for fp in tdir.glob(f"{vid}*.{ext}"):
+            return fp
+    return None
+
+
+def _make_subs_cmd(
+    *,
+    proxy_url: str | None,
+    out_tpl: str,
+    url_or_id: str,
+    lang_spec: str,
+) -> list[str]:
+    cmd: list[str] = ["yt-dlp"]
+    if proxy_url:
+        cmd += ["--proxy", proxy_url]
+    cmd += [
+        "--skip-download",
+        "--write-sub",
+        "--write-auto-sub",
+        "--sub-langs",
+        lang_spec,
+        "--retries",
+        "3",
+        "--sleep-requests",
+        "1",
+        "--socket-timeout",
+        "20",
+        "-o",
+        out_tpl,
+        url_or_id,
+    ]
+    return cmd
+
+
+def _convert_subtitle(cand: Path, raw: str) -> str:
+    ext = cand.suffix.lower()
+    if ext == ".vtt":
+        return _vtt_to_text(raw)
+    if ext == ".srt":
+        return _srt_to_text(raw)
+    return ""
+
+
+def download_subs(
     url_or_id: str,
     languages: Iterable[str] | None = None,
 ) -> str:
@@ -265,41 +314,30 @@ def download_and_read_subtitles(  # noqa: C901, PLR0911, PLR0912
 
     Tries VTT and SRT. Returns empty string on failure.
     """
+    result_text = ""
     langs = list(languages) if languages else ["pt", "en"]
     # Expand to include region-specific variants (e.g., pt-BR) and exact codes
     lang_patterns: list[str] = []
     for lang in langs:
-        lang_patterns.append(lang)
-        lang_patterns.append(f"{lang}.*")
+        lang_patterns.extend((lang, f"{lang}.*"))
     # De-duplicate while preserving order
     lang_patterns = list(dict.fromkeys(lang_patterns))
     with tempfile.TemporaryDirectory() as td:
         tdir = Path(td)
-        vid = video_id_from_url(url_or_id)
+        vid = vid_from_url(url_or_id)
         out_tpl = str(tdir / f"{vid}.%(ext)s")
         lang_arg = ",".join(lang_patterns)
         proxy_url = _build_proxy_url()
-        cmd = ["yt-dlp"]
-        if proxy_url:
-            cmd += ["--proxy", proxy_url]
-        cmd += [
-            "--skip-download",
-            "--write-sub",
-            "--write-auto-sub",
-            "--sub-langs",
-            lang_arg,
-            "--retries",
-            "3",
-            "--sleep-requests",
-            "1",
-            "--socket-timeout",
-            "20",
-            "-o",
-            out_tpl,
-            url_or_id,
-        ]
+
+        # First attempt: requested languages
+        cmd = _make_subs_cmd(
+            proxy_url=proxy_url,
+            out_tpl=out_tpl,
+            url_or_id=url_or_id,
+            lang_spec=lang_arg,
+        )
+        res = None
         try:
-            # Confine yt-dlp temp and working dir to the temporary folder
             res = _run_yt_dlp(cmd, cwd=tdir, temp_dir=tdir)
         except YtDlpError as e:
             logger.debug(
@@ -309,37 +347,18 @@ def download_and_read_subtitles(  # noqa: C901, PLR0911, PLR0912
                 type(e).__name__,
                 e,
             )
-            return ""
 
-        # Find downloaded subtitle file (prefer VTT then SRT)
-        cand: Path | None = None
-        for ext in ("vtt", "srt"):
-            for fp in tdir.glob(f"{vid}*.{ext}"):
-                cand = fp
-                break
-            if cand:
-                break
+        cand = _find_first_subtitle_file(tdir, vid)
+
+        # Second attempt: any available language
+        res_any = None
         if not cand:
-            # Retry by fetching any available subtitles, regardless of language
-            cmd_any = ["yt-dlp"]
-            if proxy_url:
-                cmd_any += ["--proxy", proxy_url]
-            cmd_any += [
-                "--skip-download",
-                "--write-sub",
-                "--write-auto-sub",
-                "--sub-langs",
-                "all",
-                "--retries",
-                "3",
-                "--sleep-requests",
-                "1",
-                "--socket-timeout",
-                "20",
-                "-o",
-                out_tpl,
-                url_or_id,
-            ]
+            cmd_any = _make_subs_cmd(
+                proxy_url=proxy_url,
+                out_tpl=out_tpl,
+                url_or_id=url_or_id,
+                lang_spec="all",
+            )
             try:
                 res_any = _run_yt_dlp(cmd_any, cwd=tdir, temp_dir=tdir)
             except YtDlpError as e:
@@ -349,39 +368,36 @@ def download_and_read_subtitles(  # noqa: C901, PLR0911, PLR0912
                     type(e).__name__,
                     e,
                 )
-                return ""
-            for ext in ("vtt", "srt"):
-                for fp in tdir.glob(f"{vid}*.{ext}"):
-                    cand = fp
-                    break
-                if cand:
-                    break
-            if not cand:
-                # Log outputs to help diagnose missing subs
-                stderr_snip = (res.stderr or "").strip() if "res" in locals() else ""
-                stderr_snip_any = (res_any.stderr or "").strip()
-                stdout_snip = (res.stdout or "").strip() if "res" in locals() else ""
-                stdout_snip_any = (res_any.stdout or "").strip()
-                logger.debug(
-                    (
-                        "No subtitle files found for {} (langs={}). "
-                        "yt-dlp stderr: {} | stdout: {} | "
-                        "retry(all) stderr: {} | stdout: {}"
-                    ),
-                    url_or_id,
-                    lang_arg,
-                    stderr_snip[:500],
-                    stdout_snip[:500],
-                    stderr_snip_any[:500],
-                    stdout_snip_any[:500],
-                )
-                return ""
-        try:
-            raw = cand.read_text(encoding="utf-8", errors="ignore")  # type: ignore[arg-type]
-        except OSError:
-            return ""
-        if cand.suffix.lower() == ".vtt":  # type: ignore[union-attr]
-            return _vtt_to_text(raw)
-        if cand.suffix.lower() == ".srt":  # type: ignore[union-attr]
-            return _srt_to_text(raw)
-        return ""
+            cand = _find_first_subtitle_file(tdir, vid)
+
+        if not cand:
+            # Log outputs to help diagnose missing subs
+            stderr_snip = (res.stderr or "").strip() if res is not None else ""
+            stdout_snip = (res.stdout or "").strip() if res is not None else ""
+            stderr_snip_any = (
+                (res_any.stderr or "").strip() if res_any is not None else ""
+            )
+            stdout_snip_any = (
+                (res_any.stdout or "").strip() if res_any is not None else ""
+            )
+            logger.debug(
+                (
+                    "No subtitle files found for {} (langs={}). "
+                    "yt-dlp stderr: {} | stdout: {} | "
+                    "retry(all) stderr: {} | stdout: {}"
+                ),
+                url_or_id,
+                lang_arg,
+                stderr_snip[:500],
+                stdout_snip[:500],
+                stderr_snip_any[:500],
+                stdout_snip_any[:500],
+            )
+        else:
+            try:
+                raw = cand.read_text(encoding="utf-8", errors="ignore")
+                result_text = _convert_subtitle(cand, raw)
+            except OSError:
+                result_text = ""
+
+    return result_text

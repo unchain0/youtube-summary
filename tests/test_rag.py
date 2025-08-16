@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -23,6 +23,8 @@ class FakeEmbeddings:
 class FakeChroma:
     """A minimal in-memory stand-in for Chroma used in tests."""
 
+    _REGISTRY: ClassVar[dict[str, set[str]]] = {}
+
     def __init__(
         self,
         embedding_function: object | None = None,
@@ -39,9 +41,7 @@ class FakeChroma:
         # Maintain IDs per (persist_directory, collection_name) so subsequent
         # instances share the same underlying collection state.
         key = f"{persist_directory}|{collection_name}"
-        if not hasattr(FakeChroma, "_REGISTRY"):
-            FakeChroma._REGISTRY = {}
-        reg: dict[str, set[str]] = FakeChroma._REGISTRY  # type: ignore[attr-defined]
+        reg: dict[str, set[str]] = FakeChroma._REGISTRY
         if key not in reg:
             reg[key] = set()
         self._key = key
@@ -83,7 +83,7 @@ class FakeChroma:
         del include
         return {"ids": sorted(self._ids)}
 
-    def as_retriever(self, search_kwargs: dict[str, object]) -> object:
+    def as_retriever(self, search_kwargs: dict[str, int]) -> object:
         """Return a simple retriever exposing an `invoke()` method."""
 
         class R:
@@ -91,13 +91,15 @@ class FakeChroma:
                 self._docs = docs
 
             def invoke(self, _query: object) -> list[object]:
-                return self._docs[: search_kwargs.get("k", 4)]
+                k = int(search_kwargs.get("k", 4))
+                return self._docs[:k]
 
         return R(self.docs)
 
 
 def test_index_transcripts_empty_initializes_db(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Indexing on empty directory initializes the vector DB and persists it."""
     monkeypatch.setattr(rag_mod, "TogetherEmbeddings", FakeEmbeddings)
@@ -113,7 +115,8 @@ def test_index_transcripts_empty_initializes_db(
 
 
 def test_add_channel_no_docs_ok(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Adding a channel with no docs still initializes the DB."""
     monkeypatch.setattr(rag_mod, "TogetherEmbeddings", FakeEmbeddings)
@@ -130,7 +133,8 @@ def test_add_channel_no_docs_ok(
 
 
 def test_deduplicate_chunk_ids_across_runs(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Ensure repeated indexing doesn't create duplicate chunk IDs."""
     monkeypatch.setattr(rag_mod, "TogetherEmbeddings", FakeEmbeddings)
@@ -152,10 +156,12 @@ def test_deduplicate_chunk_ids_across_runs(
     # First full indexing
     r.index_transcripts(base)
     assert isinstance(r.db, FakeChroma)
-    first_ids = set(r.db.get().get("ids", []))  # type: ignore[assignment]
+    data1 = r.db.get()
+    first_ids = set(data1.get("ids", []))
     assert len(first_ids) > 0
 
     # Incremental add of the same channel should skip all existing IDs
     r.add_channel(chan)
-    second_ids = set(r.db.get().get("ids", []))  # type: ignore[assignment]
+    data2 = r.db.get()
+    second_ids = set(data2.get("ids", []))
     assert second_ids == first_ids

@@ -11,6 +11,8 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
+from queue import Queue
+from typing import Any
 
 import streamlit as st
 from streamlit.runtime.scriptrunner import add_script_run_ctx
@@ -20,6 +22,8 @@ from src.rag import TranscriptRAG
 from src.utils.logging_setup import get_logger, setup_logging
 from src.utils.youtube_helpers import channel_key_from_url, filter_pending_urls
 from src.youtube import YouTubeTranscriptManager
+
+PathQueue = Queue[Path | None]
 
 # Minimum length heuristic to treat a key as a channel ID (vs handle)
 CHANNEL_ID_MIN_LEN = 20
@@ -79,7 +83,7 @@ def _ensure_state() -> None:
     ss.setdefault("index_queue", None)
 
 
-def _reset_download_state(ss: st.session_state.__class__) -> None:
+def _reset_download_state(ss: Any) -> None:
     """Reset progress state for a new download session."""
     ss.download_running = True
     ss.download_errors = []
@@ -93,7 +97,7 @@ def _log_download_start(
     languages: list[str],
     limit: int | None,
     subs_fallback: bool,
-    index_queue: queue.Queue | None,
+    index_queue: PathQueue | None,
 ) -> None:
     logger.info(
         "Download worker started",
@@ -153,7 +157,10 @@ def _save_transcript_for_url(
     )
 
 
-def _enqueue_for_index(index_queue: queue.Queue | None, path: Path) -> None:
+def _enqueue_for_index(
+    index_queue: PathQueue | None,
+    path: Path,
+) -> None:
     if index_queue is None:
         return
     with suppress(queue.Full):
@@ -163,7 +170,7 @@ def _enqueue_for_index(index_queue: queue.Queue | None, path: Path) -> None:
 
 def _update_progress_session(
     *,
-    ss: st.session_state.__class__,
+    ss: Any,
     download_last: str,
     download_saved: list[str],
     download_errors: list[str],
@@ -180,7 +187,7 @@ def _download_worker(  # noqa: PLR0913
     limit: int | None,
     *,
     subs_fallback: bool,
-    index_queue: queue.Queue | None = None,
+    index_queue: PathQueue | None = None,
 ) -> None:
     ss = st.session_state
     _reset_download_state(ss)
@@ -260,11 +267,11 @@ def _download_worker(  # noqa: PLR0913
     # Signal index worker to finish when queue is empty
     if index_queue is not None:
         with suppress(queue.Full):
-            index_queue.put(None, timeout=0.1)
+            index_queue.put(None, timeout=0.1)  # Sentinel value for shutdown
             logger.debug("Sentinel enqueued for indexer")
 
 
-def _index_worker(transcripts_root: Path, q: queue.Queue) -> None:
+def _index_worker(transcripts_root: Path, q: PathQueue) -> None:
     ss = st.session_state
     ss.index_running = True
     ss.index_errors = []
@@ -414,9 +421,9 @@ def _start_background_download(channels: list[str]) -> None:
         },
     )
     # Prepare optional indexing worker
-    q: queue.Queue | None = None
+    q: PathQueue | None = None
     if ss.stream_indexing:
-        q = queue.Queue()
+        q = Queue[Path | None]()
         ss.index_queue = q
         ss.index_added = 0
         ss.index_skipped = 0

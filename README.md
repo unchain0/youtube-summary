@@ -1,18 +1,23 @@
 # YouTube Summary – Transcript + RAG
 
-Busca transcrições de vídeos de canais do YouTube, indexa com embeddings locais (FastEmbed) e responde perguntas via modelo Groq (RAG). Projetado para Python 3.13, `uv`, `ruff`, `pytest`, `pyrefly`. Caminhos usando `pathlib.Path`.
+App multipáginas em Streamlit para buscar transcrições de vídeos de canais do YouTube, indexar com embeddings Together AI (Chroma) e consultar via Groq (RAG). Projetado para Python 3.13, `uv`, `ruff`, `pytest`. Caminhos usando `pathlib.Path`.
 
 ## Requisitos
 
 - Python 3.13
 - uv (gerenciador de pacotes)
 - Chaves de API em `.env`:
-  - `GROQ_API_KEY`
-  - `GROQ_MODEL` (opcional, padrão: `llama3-70b-8192`)
-  - `YT_PROXY_URL` (opcional, e.g. `http://host:port` ou `http://user:pass@host:port`)
-  - `YT_PROXY_USERNAME` (opcional, usado se não embutir user:pass em `YT_PROXY_URL`)
-  - `YT_PROXY_PASSWORD` (opcional, usado se não embutir user:pass em `YT_PROXY_URL`)
-- `yt-dlp` (instalado como dependência Python)
+  - `TOGETHER_API_KEY` (obrigatório para embeddings Together)
+  - `GROQ_API_KEY` (obrigatório para LLM Groq)
+  - `GROQ_MODEL` (opcional; padrão: `llama-3.3-70b-versatile`)
+  - `TOGETHER_EMBEDDINGS_MODEL` (opcional; padrão: `intfloat/multilingual-e5-large-instruct`)
+  - `HTTP_URL` (opcional; proxy HTTP p/ reduzir bloqueios)
+- `yt-dlp` (já vem como dependência Python)
+
+Notas de suporte a conteúdo YouTube:
+
+- São suportados: vídeos padrão (`youtube.com/watch` e `youtu.be`), Shorts e lives gravadas (`youtube.com/live`).
+- São excluídos: embeds e clips (não processados em nenhuma etapa).
 
 ## Instalação
 
@@ -27,9 +32,13 @@ Configurar variáveis de ambiente
 - Copie `.env.example` para `.env` e preencha:
 
 ```bash
+TOGETHER_API_KEY=...
 GROQ_API_KEY=...
+# Modelos (opcionais)
+GROQ_MODEL=llama-3.3-70b-versatile
+TOGETHER_EMBEDDINGS_MODEL=intfloat/multilingual-e5-large-instruct
 # Proxy (opcional)
-HTTP_URL=http://proxy.myisp.com:3128
+HTTP_URL=http://user:pass@proxy.example.org:8080
 ```
 
 ## Estrutura do projeto
@@ -37,105 +46,84 @@ HTTP_URL=http://proxy.myisp.com:3128
 - `src/youtube.py`
   - Classe `YouTubeTranscriptManager` para extrair URLs e salvar transcrições em `data/transcripts/<canal>/<video_id>.txt`.
 - `src/rag.py`
-  - Classe `TranscriptRAG` para indexar (Chroma) e consultar (Groq + FastEmbed).
+  - Classe `TranscriptRAG` para indexar (Chroma) e consultar (Groq + Together Embeddings).
 - `main.py`
-  - CLI com todos os comandos do fluxo (buscar, indexar, consultar).
+  - Dashboard Streamlit (apenas apresentação/overview e navegação lateral).
+- `pages/01_YouTubers.py`
+  - Lista canais baixados e transcrições disponíveis.
+- `pages/02_Baixar_Notas.py`
+  - Baixa transcrições por canal com progresso, limites, idiomas e fallback de legendas.
+- `pages/03_Indexacao.py`
+  - Indexa/reindexa o vetor (Chroma) e faz atualizações incrementais.
+- `pages/04_Chat.py`
+  - Interface de chat para consultar o índice RAG com seleção dinâmica de modelo Groq.
 - `data/transcripts/`
   - Transcrições por canal.
 - `data/vector_store/`
   - Persistência local da base vetorial (Chroma).
 
-## Uso rápido
+## Uso rápido (Streamlit)
 
-Use o `main.py` como entrypoint do CLI.
-
-- Ajuda:
+### Rodar o app
 
 ```bash
-python main.py -h
+uv run streamlit run main.py
 ```
 
-- Buscar transcrições, reindexar e consultar:
+### Navegação (sidebar)
 
-```bash
-python main.py https://www.youtube.com/@PapaHardware \
-  --limit 3 --rebuild --languages pt,en --subs \
-  --query "Quais são os principais temas do canal?"
-```
+- Dashboard, YouTubers, Download, Indexação, Chat.
 
-Observações:
+### Fluxo típico
 
-- Idiomas válidos: apenas `pt` e `en`.
-- `--limit` controla quantos vídeos por canal baixar.
-- `--rebuild` recria a base Chroma a partir de todos os `.txt`.
-- Sem `--rebuild`, o CLI adiciona incrementalmente novos arquivos.
-- `--subs` tenta baixar legendas (auto/manuais) via `yt-dlp` quando não houver transcrição.
+- Adicione um ou mais canais em `Download` e clique em “Baixar”.
+- Faça a indexação em `Indexação` (reconstruir do zero ou atualizar incrementalmente).
+- Faça perguntas em `Chat` (escolha o modelo Groq na barra lateral se necessário).
 
-## Opções do CLI
+## Páginas do app (Streamlit)
 
-- `channels` (posicional)
-  - Um ou mais URLs de canal do YouTube (ex.: `https://www.youtube.com/@Handle`)
-- `--limit <int>`
-  - Limita o número de vídeos por canal
-- `--languages <str>`
-  - Idiomas separados por vírgula (ex.: `pt,en`)
-- `--rebuild`
-  - Reconstrói todo o índice a partir de `data/transcripts/`
-- `--query "<pergunta>"`
-  - Faz uma pergunta usando o RAG
-- `--transcripts-dir <pasta>`
-  - Padrão: `data/transcripts`
-- `--vector-dir <pasta>`
-  - Padrão: `data/vector_store`
-- `--subs`
-  - Baixa legendas (automáticas/manuais) via `yt-dlp` como fallback
+- YouTubers (`pages/01_YouTubers.py`)
+  - Lista canais com transcrições salvas; expanda para ver os arquivos `.txt`.
+- Download (`pages/02_Baixar_Notas.py`)
+  - Baixa transcrições com thread em background, progresso, limites por canal, seleção de idiomas (`pt`, `en`) e opção de fallback de legendas (yt-dlp) quando não houver transcript.
+  - Suporta “baixar novos vídeos para todos os canais existentes”.
+- Indexação (`pages/03_Indexacao.py`)
+  - Recria o índice (Chroma) do zero a partir de `data/transcripts/` ou faz atualização incremental por canal.
+  - Permite reindexar/remover canal do índice. A configuração de embeddings vem do ambiente.
+- Chat (`pages/04_Chat.py`)
+  - Chat RAG com seleção dinâmica do modelo Groq na sidebar (com refresh e entrada customizada). Atualiza `st.session_state.groq_model_name` e reinicializa `TranscriptRAG` quando muda.
 
-## Fluxos comuns
+## Fluxos comuns (no app)
 
-- Baixar transcrições (sem indexar):
-
-```bash
-python main.py https://www.youtube.com/@Handle --limit 5 --languages pt,en
-```
-
-- Indexar tudo (rebuild):
-
-```bash
-python main.py https://www.youtube.com/@Handle --rebuild
-```
-
-- Atualizar incrementalmente:
-
-```bash
-python main.py https://www.youtube.com/@Handle --limit 10
-```
-
-- Perguntar após atualizar índice:
-
-```bash
-python main.py https://www.youtube.com/@Handle --limit 5 \
-  --query "Resumo dos últimos vídeos"
-```
+- Baixar primeiros vídeos de um canal (com fallback de legendas) e indexar:
+  - Vá em `Download` → cole a(s) URL(s) do canal → defina `limit` → ative `fallback de legendas` se quiser → “Baixar”.
+  - Em `Indexação` → “Recriar do zero” para montar a coleção inicial.
+  - Em `Chat` → escolha o modelo Groq e pergunte.
+- Atualizações recorrentes:
+  - Em `Download` → “Baixar novos vídeos de todos os canais”.
+  - Em `Indexação` → “Atualizar incrementalmente (todos ou canal selecionado)”.
 
 ## Como funciona (resumo)
 
-- `YouTubeTranscriptManager.get_video_urls_from_channel()` usa `yt-dlp` para listar URLs e ignora vídeos com disponibilidade restrita (privado/membros), quando detectável via `availability`.
-- `YouTubeTranscriptManager.fetch_transcript()` usa `youtube-transcript-api` e tenta idiomas em ordem (`pt`, `en`). Caso indisponível, com `--subs` tenta baixar legendas (VTT/SRT).
+- `YouTubeTranscriptManager.get_video_urls_from_channel()` usa `yt-dlp` para listar URLs e ignora vídeos com disponibilidade restrita (privado/membros) quando detectável via `availability`. Apenas conteúdos suportados são processados (watch, youtu.be, Shorts, lives). Embeds e clips são ignorados.
+- `YouTubeTranscriptManager.fetch_transcript()` usa `youtube-transcript-api` e tenta idiomas em ordem (`pt`, `en`). Quando indisponível e habilitado, tenta fallback de legendas (VTT/SRT) via `yt-dlp`.
 - Transcrições são salvas em `data/transcripts/<canal>/<video_id>.txt`.
-- `TranscriptRAG.index_transcripts()` lê `.txt`, quebra em chunks, embeda com FastEmbed e persiste no `Chroma`.
-- `TranscriptRAG.as_chain()` cria a cadeia com Groq (modelo definido por `GROQ_MODEL`, padrão `llama3-70b-8192`) e o prompt em PT-BR.
-- `TranscriptRAG.query()` executa a pergunta no pipeline e retorna a resposta.
+- `TranscriptRAG.index_transcripts()` lê `.txt`, quebra em chunks e embeda com Together (`TOGETHER_EMBEDDINGS_MODEL`) persistindo em `Chroma`.
+- O LLM é Groq (`GROQ_MODEL`, padrão `llama-3.3-70b-versatile`), inicializado sob demanda.
+- `TranscriptRAG.query()` e `query_with_sources()` executam a consulta e retornam resposta (e fontes, quando solicitado).
 
 ## Troubleshooting
 
-- Módulos não encontrados (dotenv, langchain, etc.)
-  - Rode: `uv sync`
+- Streamlit não abre no navegador
+  - Verifique o terminal para a URL local (ex.: http://localhost:8501) e abra manualmente.
+- Erro ao inicializar o modelo Groq
+  - Confirme `GROQ_API_KEY` e se o nome em `GROQ_MODEL` existe e está acessível.
+- Embeddings Together não inicializam
+  - Confirme `TOGETHER_API_KEY` e (opcionalmente) `TOGETHER_EMBEDDINGS_MODEL`.
 - `yt-dlp` não funciona
-  - Confirme que o comando está acessível no ambiente virtual ativado pelo `uv`.
-- Imports LangChain/Groq
-  - Dependências incluem `langchain-openai`, `langchain-community`, `langchain-groq`, `chromadb`.
+  - Confirme que o comando está acessível no ambiente virtual (use `uv run ...`).
 - Chroma: erro de dimensão/coleção
-  - O projeto agora usa `collection_name` atrelado ao modelo de embedding para evitar conflitos. Se você trocou de embedding/modelo e ocorrer erro ao adicionar documentos, rode com `--rebuild` para recriar o índice ou apague `data/vector_store/` manualmente.
+  - O nome da coleção depende do modelo de embedding. Se você trocou de embedding/modelo e ocorrer erro ao adicionar documentos, recrie o índice do zero em `Indexação` ou apague `data/vector_store/` manualmente.
 
 ## Proxies (reduce 429 / IP bans)
 
@@ -154,32 +142,3 @@ Notes:
 
 - Proxies do not fully eliminate blocks; prefer providers with IP rotation.
 - Use `--limit` and run in batches to reduce request rate.
-
-## Videos without transcript: fallback
-
-- `--subs`: tries to download auto/manual subtitles via `yt-dlp` and converts VTT/SRT to text.
-
-## Qualidade (opcional)
-
-- Lint:
-
-```bash
-ruff check .
-```
-
-- Format:
-
-```bash
-ruff format .
-```
-
-- Type-check:
-
-```bash
-pyrefly .
-```
-
-## Notas
-
-- Use apenas `pt` e `en` como idiomas de transcrição.
-- `pathlib.Path` é usado para todos os caminhos; converta para `str` apenas quando bibliotecas exigirem.

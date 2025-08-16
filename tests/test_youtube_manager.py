@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Never
 
 if TYPE_CHECKING:
@@ -35,11 +36,11 @@ ok\thttps://youtu.be/ok1
 https://youtu.be/ok3
 """.strip()
 
+    @dataclass
     class FakeCompleted:
         """Fake subprocess.CompletedProcess with stdout only."""
 
-        def __init__(self) -> None:
-            self.stdout = output
+        stdout: str
 
     def fake_run(
         cmd: list[str],
@@ -51,7 +52,7 @@ https://youtu.be/ok3
         """Return our fake process after basic validation."""
         del capture_output, text, check
         assert cmd[0] == "yt-dlp"
-        return FakeCompleted()
+        return FakeCompleted(output)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -65,6 +66,7 @@ https://youtu.be/ok3
 
 
 def test_save_transcript_writes_file(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """Ensure `save_transcript` writes the transcript to disk."""
@@ -75,13 +77,14 @@ def test_save_transcript_writes_file(
         del args, kwargs
         return "hello world"
 
-    yt.fetch_transcript = fake_fetch
+    monkeypatch.setattr(yt, "fetch_transcript", fake_fetch)
     out = yt.save_transcript("channelX", "https://youtu.be/abc123")
     assert out.exists()
     assert out.read_text(encoding="utf-8") == "hello world"
 
 
 def test_save_transcript_skips_existing(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """`save_transcript` should skip rewriting an existing non-empty file."""
@@ -97,7 +100,7 @@ def test_save_transcript_skips_existing(
         msg = "fetch_transcript should not be called"
         raise AssertionError(msg)
 
-    yt.fetch_transcript = fail_fetch
+    monkeypatch.setattr(yt, "fetch_transcript", fail_fetch)
     returned = yt.save_transcript("channelX", "https://youtu.be/abc123")
     assert returned == out
     assert out.read_text(encoding="utf-8") == "original"
@@ -164,21 +167,15 @@ def test_fetch_transcript_transcripts_disabled_with_fallback(
     yt = YouTubeTranscriptManager(base_dir=str(tmp_path / "irrelevant"))
 
     class FakeApi:
-        def list(self, _vid: str) -> object:
+        @staticmethod
+        def list(_vid: str) -> object:
             msg_disabled = "disabled"
             raise TranscriptsDisabled(msg_disabled)
 
-    monkeypatch.setattr(yt, "_create_ytt_api", lambda: FakeApi())
+    monkeypatch.setattr(yt, "_create_ytt_api", FakeApi)
     # Force subtitle fallback path to return some text
-    monkeypatch.setattr(
-        ymod,
-        "_download_subs",
-        lambda _url, _languages=None: "subs",
-    )
-    assert (
-        yt.fetch_transcript("https://youtu.be/abc", use_subs_fallback=True)
-        == "subs"
-    )
+    monkeypatch.setattr(ymod, "download_subs", lambda _url, _languages=None: "subs")
+    assert yt.fetch_transcript("https://youtu.be/abc", use_subs_fallback=True) == "subs"
 
 
 def test_fetch_transcript_transcripts_disabled_without_fallback(
@@ -192,11 +189,12 @@ def test_fetch_transcript_transcripts_disabled_without_fallback(
     yt = YouTubeTranscriptManager(base_dir=str(tmp_path / "irrelevant"))
 
     class FakeApi:
-        def list(self, _vid: str) -> object:
+        @staticmethod
+        def list(_vid: str) -> object:
             msg_disabled = "disabled"
             raise TranscriptsDisabled(msg_disabled)
 
-    monkeypatch.setattr(yt, "_create_ytt_api", lambda: FakeApi())
+    monkeypatch.setattr(yt, "_create_ytt_api", FakeApi)
     with pytest.raises(SkipVideoError) as ei:
         yt.fetch_transcript(
             "https://youtu.be/abc",
@@ -214,44 +212,51 @@ def test_fetch_entries_no_transcript_found_with_fallback(
     yt = YouTubeTranscriptManager(base_dir=str(tmp_path / "irrelevant"))
 
     class FakeTranscript:
+        @staticmethod
         def fetch(
-            self,
-            _preserve_formatting: bool = True,  # noqa: FBT001, FBT002
+            *,
+            _preserve_formatting: bool = True,
         ) -> Never:
-            msg_none = "none"
-            raise NoTranscriptFound(msg_none)
+            vid_str = "vid"
+            langs = ["pt", "en"]
+            data: list[dict[str, object]] = []
+            raise NoTranscriptFound(vid_str, langs, data)
 
     class FakeList:
         def __iter__(self) -> Iterator[int]:
             return iter([1])
 
+        @staticmethod
         def find_manually_created_transcript(
-            self, _langs: list[str],
+            _langs: list[str],
         ) -> FakeTranscript:
             return FakeTranscript()
 
+        @staticmethod
         def find_generated_transcript(
-            self, _langs: list[str],
+            _langs: list[str],
         ) -> Never:
             vid_str = "vid"
             langs = ["pt", "en"]
-            data = []
+            data: list[dict[str, object]] = []
             raise NoTranscriptFound(vid_str, langs, data)
 
+        @staticmethod
         def find_transcript(
-            self, _langs: list[str],
+            _langs: list[str],
         ) -> Never:
             vid_str = "vid"
             langs = ["pt", "en"]
-            data = []
+            data: list[dict[str, object]] = []
             raise NoTranscriptFound(vid_str, langs, data)
 
     class FakeApi:
-        def list(self, _vid: str) -> FakeList:
+        @staticmethod
+        def list(_vid: str) -> FakeList:
             return FakeList()
 
-    monkeypatch.setattr(yt, "_create_ytt_api", lambda: FakeApi())
-    monkeypatch.setattr(ymod, "_download_subs", lambda _url, _languages=None: "subs")
+    monkeypatch.setattr(yt, "_create_ytt_api", FakeApi)
+    monkeypatch.setattr(ymod, "download_subs", lambda _url, _languages=None: "subs")
     assert yt.fetch_transcript("https://youtu.be/abc", use_subs_fallback=True) == "subs"
 
 
@@ -263,43 +268,50 @@ def test_fetch_entries_no_transcript_found_without_fallback(
     yt = YouTubeTranscriptManager(base_dir=str(tmp_path / "irrelevant"))
 
     class FakeTranscript:
+        @staticmethod
         def fetch(
-            self,
-            _preserve_formatting: bool = True,  # noqa: FBT001, FBT002
+            *,
+            _preserve_formatting: bool = True,
         ) -> Never:
-            msg_none = "none"
-            raise NoTranscriptFound(msg_none)
+            vid_str = "vid"
+            langs = ["pt", "en"]
+            data: list[dict[str, object]] = []
+            raise NoTranscriptFound(vid_str, langs, data)
 
     class FakeList:
         def __iter__(self) -> Iterator[int]:
             return iter([1])
 
+        @staticmethod
         def find_manually_created_transcript(
-            self, _langs: list[str],
+            _langs: list[str],
         ) -> FakeTranscript:
             return FakeTranscript()
 
+        @staticmethod
         def find_generated_transcript(
-            self, _langs: list[str],
+            _langs: list[str],
         ) -> Never:
             vid_str = "vid"
             langs = ["pt", "en"]
-            data = []
+            data: list[dict[str, object]] = []
             raise NoTranscriptFound(vid_str, langs, data)
 
+        @staticmethod
         def find_transcript(
-            self, _langs: list[str],
+            _langs: list[str],
         ) -> Never:
             vid_str = "vid"
             langs = ["pt", "en"]
-            data = []
+            data: list[dict[str, object]] = []
             raise NoTranscriptFound(vid_str, langs, data)
 
     class FakeApi:
-        def list(self, _vid: str) -> FakeList:
+        @staticmethod
+        def list(_vid: str) -> FakeList:
             return FakeList()
 
-    monkeypatch.setattr(yt, "_create_ytt_api", lambda: FakeApi())
+    monkeypatch.setattr(yt, "_create_ytt_api", FakeApi)
     with pytest.raises(RuntimeError):
         yt.fetch_transcript("https://youtu.be/abc", use_subs_fallback=False)
 
@@ -312,8 +324,10 @@ def test_select_transcript_order_and_assemble(
     yt = YouTubeTranscriptManager(base_dir=str(tmp_path / "irrelevant"))
 
     class GoodTranscript:
+        @staticmethod
         def fetch(
-            self, _preserve_formatting: bool = True,  # noqa: FBT001, FBT002
+            *,
+            _preserve_formatting: bool = True,
         ) -> list[dict[str, float | str]]:
             return [
                 {"text": "hello", "start": 0.0, "duration": 1.0},
@@ -324,30 +338,36 @@ def test_select_transcript_order_and_assemble(
         def __iter__(self) -> Iterator[int]:
             return iter([1])
 
+        @staticmethod
         def find_manually_created_transcript(
-            self, _langs: list[str],
+            _langs: list[str],
         ) -> Never:
             vid_str = "vid"
             langs = ["pt", "en"]
-            data = []
+            data: list[dict[str, object]] = []
             raise NoTranscriptFound(vid_str, langs, data)
 
+        @staticmethod
         def find_generated_transcript(
-            self, _langs: list[str],
+            _langs: list[str],
         ) -> GoodTranscript:
             return GoodTranscript()
 
-        def find_transcript(self, _langs: list[str]) -> Never:
+        @staticmethod
+        def find_transcript(
+            _langs: list[str],
+        ) -> Never:
             vid_str = "vid"
             langs = ["pt", "en"]
-            data = []
+            data: list[dict[str, object]] = []
             raise NoTranscriptFound(vid_str, langs, data)
 
     class FakeApi:
-        def list(self, _vid: str) -> FakeList:
+        @staticmethod
+        def list(_vid: str) -> FakeList:
             return FakeList()
 
-    monkeypatch.setattr(yt, "_create_ytt_api", lambda: FakeApi())
+    monkeypatch.setattr(yt, "_create_ytt_api", FakeApi)
     assert (
         yt.fetch_transcript("https://youtu.be/abc", use_subs_fallback=False)
         == "hello world"
@@ -360,7 +380,8 @@ def test_normalize_entries_variants(tmp_path: Path) -> None:
 
     # 1) FetchedTranscript-like with to_raw_data
     class Fetched:
-        def to_raw_data(self) -> list[dict[str, float | str]]:
+        @staticmethod
+        def to_raw_data() -> list[dict[str, float | str]]:
             return [
                 {"text": "a", "start": 0.0, "duration": 1.0},
                 {"text": "b", "start": 1.0, "duration": 1.0},
@@ -372,11 +393,11 @@ def test_normalize_entries_variants(tmp_path: Path) -> None:
     assert out1[0]["text"] == "a"
 
     # 2) Iterable of snippet-like objects
+    @dataclass
     class Snip:
-        def __init__(self, t: str, s: float, d: float) -> None:
-            self.text = t
-            self.start = s
-            self.duration = d
+        text: str
+        start: float
+        duration: float
 
     out2 = yt._normalize_entries([Snip("x", 0.0, 1.0), Snip("y", 1.0, 1.0)])  # noqa: SLF001
     assert [e["text"] for e in out2] == ["x", "y"]

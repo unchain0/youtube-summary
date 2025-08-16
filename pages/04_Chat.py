@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import cast
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -66,10 +67,11 @@ def _get_rag() -> TranscriptRAG:
             vector_dir=ss.vector_dir,
             groq_model=ss.groq_model_name,
         )
-    return ss.rag
+    return cast("TranscriptRAG", ss.rag)
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+# mypy: ignore-errors
+@st.cache_data(ttl=900, show_spinner=False)  # type: ignore[misc]
 def _list_groq_models(api_key: str | None) -> list[str]:
     """Fetch Groq models via SDK. Returns [] on error or missing key."""
     try:

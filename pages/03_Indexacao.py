@@ -7,6 +7,7 @@ UI language: Portuguese (pt-BR). Code/docstrings/logs in English.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -55,7 +56,7 @@ def _get_rag() -> TranscriptRAG:
             "Initialized TranscriptRAG",
             extra={"vector_dir": str(ss.vector_dir)},
         )
-    return ss.rag
+    return cast("TranscriptRAG", ss.rag)
 
 
 def _list_channels(transcripts_dir: Path) -> list[str]:
@@ -64,8 +65,6 @@ def _list_channels(transcripts_dir: Path) -> list[str]:
     channels = [p.name for p in sorted(transcripts_dir.iterdir()) if p.is_dir()]
     logger.debug("Listed channels", extra={"count": len(channels)})
     return channels
-
-
 
 
 def _configure_page() -> None:
@@ -81,9 +80,7 @@ def _configure_page() -> None:
     """
     st.markdown(hide_streamlit_menu, unsafe_allow_html=True)
     # Proper favicon to avoid oversized/clipped emoji in the browser tab
-    twemoji_base = (
-        "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/"
-    )
+    twemoji_base = "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/"
     _set_favicon(twemoji_base + "1f9e0.png")  # brain
     _ensure_state()
     logger.info("Index page configured")
@@ -110,7 +107,6 @@ def _render_paths() -> None:
         with col2:
             st.text("Índice vetorial:")
             st.code(str(st.session_state.vector_dir))
-
 
     # (Embeddings selection UI removed; Groq model selection moved to Chat page.)
 
@@ -174,7 +170,7 @@ def _render_rebuild_section() -> None:
             )
 
 
-def _render_incremental_update_section() -> None:  # noqa: C901, PLR0915
+def _render_incremental_update_section() -> None:  # noqa: PLR0915
     """Incremental update section with per-channel or all-channels options."""
     st.divider()
     st.subheader("Atualizar canais (incremental)")

@@ -28,7 +28,6 @@ dev = [
 ]
 
 [tool.ruff]
-format.preview = true
 format.docstring-code-format = true
 lint.select = ["ALL"]
 lint.ignore = [
@@ -48,6 +47,4 @@ lint.ignore = [
     "FBT003", # Boolean positional value in function call
     "D203",
     "D213",
-    "S404",   # Use `subprocess.run` instead of `subprocess.call`
 ]
-lint.preview = true

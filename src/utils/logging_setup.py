@@ -16,11 +16,14 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, Protocol, cast
 
+loguru_logger: LoggerLike
 try:
     # Prefer Loguru when available
-    from loguru import logger as loguru_logger  # type: ignore[import-not-found]
+    from loguru import logger as _loguru_logger
+
+    loguru_logger = cast("LoggerLike", _loguru_logger)
 except Exception:  # noqa: BLE001 - fallback when loguru isn't installed
     # Minimal stdlib-based logger shim exposing a Loguru-like API used here
     import logging as _logging
@@ -38,8 +41,8 @@ except Exception:  # noqa: BLE001 - fallback when loguru isn't installed
                 self._logger.setLevel(_logging.INFO)
 
         # API compat methods
-        def bind(self, component: str = "-") -> _FallbackLogger:
-            del component
+        def bind(self, **kwargs: object) -> LoggerLike:
+            del kwargs
             return self
 
         def add(self, *args: object, **kwargs: object) -> int:
@@ -86,18 +89,49 @@ except Exception:  # noqa: BLE001 - fallback when loguru isn't installed
                 return levels[name]
             raise ValueError(name)
 
-        def opt(self, *args: object, **kwargs: object) -> _FallbackLogger:
+        def opt(self, *args: object, **kwargs: object) -> LoggerLike:
             del args, kwargs
             return self
 
-        def log(self, level: object, message: str) -> None:
-            lvl = _logging.INFO if isinstance(level, str) else int(level)
+        def exception(self, msg: str, *a: object, **k: object) -> None:
+            del k
+            self._logger.exception(msg.format(*a))
+
+        def log(self, level: str | int, message: str) -> None:
+            lvl = self.level(level) if isinstance(level, str) else int(level)
             self._logger.log(lvl, message)
 
     loguru_logger = _FallbackLogger()
 
+
+class LoggerLike(Protocol):
+    def bind(self, **kwargs: Any) -> LoggerLike: ...
+
+    def add(self, *args: Any, **kwargs: Any) -> int: ...
+
+    def remove(self, *args: Any, **kwargs: Any) -> None: ...
+
+    def debug(self, msg: str, *a: Any, **k: Any) -> None: ...
+
+    def info(self, msg: str, *a: Any, **k: Any) -> None: ...
+
+    def warning(self, msg: str, *a: Any, **k: Any) -> None: ...
+
+    def error(self, msg: str, *a: Any, **k: Any) -> None: ...
+
+    def exception(self, msg: str, *a: Any, **k: Any) -> None: ...
+
+    def success(self, msg: str, *a: Any, **k: Any) -> None: ...
+
+    def level(self, name: str) -> object: ...
+
+    def opt(self, *args: Any, **kwargs: Any) -> LoggerLike: ...
+
+    def log(self, level: Any, message: str) -> None: ...
+
+
 # Export a logger pre-bound with a default component placeholder
-logger = loguru_logger.bind(component="-")
+logger: LoggerLike = loguru_logger.bind(component="-")
 
 
 def setup_logging(  # noqa: PLR0913
@@ -172,9 +206,10 @@ def setup_logging(  # noqa: PLR0913
     )
 
     # Console sink (human facing)
-    def _console_filter(record: dict) -> bool:
+    def _console_filter(record: dict[str, Any]) -> bool:
         name = record.get("name", "")
         return not any(name.startswith(pfx) for pfx in console_exclude)
+
     def _console_sink(message: str) -> None:
         sys.stdout.write(message)
         sys.stdout.flush()
@@ -249,7 +284,7 @@ def setup_logging(  # noqa: PLR0913
         intercept_stdlib_logging(names=("", *console_exclude))
 
 
-def get_logger(component: str | None = None) -> object:
+def get_logger(component: str | None = None) -> LoggerLike:
     """Return a logger bound with a component name for contextual logs.
 
     Example:
@@ -266,12 +301,12 @@ class _InterceptHandler(logging.Handler):
         try:
             # Use name if recognized, else fallback to numeric level
             loguru_logger.level(record.levelname)
-            level = record.levelname
+            lvl: int | str = record.levelname
         except ValueError:
-            level = record.levelno
+            lvl = record.levelno
         # Emit via the pre-bound 'logger' so 'extra[component]' is always present
         logger.opt(depth=6, exception=record.exc_info).log(
-            level,
+            lvl,
             record.getMessage(),
         )
 
@@ -297,6 +332,7 @@ def intercept_stdlib_logging(
 
 
 __all__ = [
+    "LoggerLike",
     "get_logger",
     "intercept_stdlib_logging",
     "logger",

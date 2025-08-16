@@ -8,21 +8,21 @@ from typing import NoReturn
 
 import pytest
 
-from utils.youtube_helpers import (
+from src.utils.youtube_helpers import (
     _build_proxy_url,
     _srt_to_text,
     _vtt_to_text,
     channel_key_from_url,
-    download_and_read_subtitles,
+    download_subs,
     filter_pending_urls,
-    is_supported_video_url,
-    video_id_from_url,
+    is_supported,
+    vid_from_url,
 )
 
 
 def test_video_id_from_url_simple_id() -> None:
     """Video ID remains unchanged when already an ID."""
-    assert video_id_from_url("dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+    assert vid_from_url("dQw4w9WgXcQ") == "dQw4w9WgXcQ"
 
 
 def test_video_id_from_url_youtube_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -45,7 +45,7 @@ def test_video_id_from_url_youtube_url(monkeypatch: pytest.MonkeyPatch) -> None:
         return FakeCompleted()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert video_id_from_url("https://www.youtube.com/watch?v=whatever") == "whatever"
+    assert vid_from_url("https://www.youtube.com/watch?v=whatever") == "whatever"
 
 
 def test_download_and_read_subtitles_returns_empty_on_failure(
@@ -65,7 +65,7 @@ def test_download_and_read_subtitles_returns_empty_on_failure(
         raise RuntimeError(msg)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert download_and_read_subtitles("https://youtu.be/xyz") == ""
+    assert download_subs("https://youtu.be/xyz") == ""
 
 
 def test_video_id_from_url_fast_youtu_be_no_yt_dlp(
@@ -78,7 +78,7 @@ def test_video_id_from_url_fast_youtu_be_no_yt_dlp(
         raise AssertionError(msg)
 
     monkeypatch.setattr(subprocess, "run", fail_run)
-    assert video_id_from_url("https://youtu.be/ID123") == "ID123"
+    assert vid_from_url("https://youtu.be/ID123") == "ID123"
 
 
 def test_video_id_from_url_fast_watch_no_yt_dlp(
@@ -92,7 +92,7 @@ def test_video_id_from_url_fast_watch_no_yt_dlp(
 
     monkeypatch.setattr(subprocess, "run", fail_run)
     url = "https://www.youtube.com/watch?v=abcDEF123"
-    assert video_id_from_url(url) == "abcDEF123"
+    assert vid_from_url(url) == "abcDEF123"
 
 
 def test_video_id_from_url_shorts_path_no_yt_dlp(
@@ -105,7 +105,7 @@ def test_video_id_from_url_shorts_path_no_yt_dlp(
         raise AssertionError(msg)
 
     monkeypatch.setattr(subprocess, "run", fail_run)
-    assert video_id_from_url("https://www.youtube.com/shorts/SHORT_ID") == "SHORT_ID"
+    assert vid_from_url("https://www.youtube.com/shorts/SHORT_ID") == "SHORT_ID"
 
 
 def test_video_id_from_url_live_path_no_yt_dlp(
@@ -118,15 +118,14 @@ def test_video_id_from_url_live_path_no_yt_dlp(
         raise AssertionError(msg)
 
     monkeypatch.setattr(subprocess, "run", fail_run)
-    assert video_id_from_url("https://www.youtube.com/live/LIVE_ID") == "LIVE_ID"
+    assert vid_from_url("https://www.youtube.com/live/LIVE_ID") == "LIVE_ID"
 
 
 def test_channel_key_from_url_variants() -> None:
     """Extract proper channel key from different channel URL formats."""
     assert channel_key_from_url("https://www.youtube.com/@Handle") == "Handle"
     assert (
-        channel_key_from_url("https://www.youtube.com/c/SomeChannel/")
-        == "SomeChannel"
+        channel_key_from_url("https://www.youtube.com/c/SomeChannel/") == "SomeChannel"
     )
     assert channel_key_from_url("https://www.youtube.com/channel/UCXYZ/") == "UCXYZ"
 
@@ -201,7 +200,10 @@ def test_download_and_read_subtitles_success_vtt(
 
     # Monkeypatch the internal runner to create a VTT file in the given cwd
     def fake_run(
-        _cmd: list[str], *, cwd: Path, temp_dir: Path,
+        _cmd: list[str],
+        *,
+        cwd: Path,
+        temp_dir: Path,
     ) -> FakeCompleted:
         del temp_dir
         # Extract vid from output template in args (not strictly needed)
@@ -212,17 +214,17 @@ def test_download_and_read_subtitles_success_vtt(
         )
         return FakeCompleted()
 
-    monkeypatch.setattr("utils.youtube_helpers._run_yt_dlp", fake_run)
-    out = download_and_read_subtitles("https://youtu.be/id123", languages=["pt"])
+    monkeypatch.setattr("src.utils.youtube_helpers._run_yt_dlp", fake_run)
+    out = download_subs("https://youtu.be/id123", languages=["pt"])
     assert out == "Olá mundo"
 
 
 def test_is_supported_video_url_matrix() -> None:
     """Support standard videos, shorts, and live streams; exclude embed/clip."""
-    assert is_supported_video_url("https://www.youtube.com/watch?v=ID") is True
-    assert is_supported_video_url("https://youtu.be/ID") is True
-    assert is_supported_video_url("https://www.youtube.com/shorts/ID") is True
-    assert is_supported_video_url("https://www.youtube.com/live/ID") is True
-    assert is_supported_video_url("https://www.youtube.com/embed/ID") is False
-    assert is_supported_video_url("https://www.youtube.com/clip/ID") is False
-    assert is_supported_video_url("ID") is True
+    assert is_supported("https://www.youtube.com/watch?v=ID") is True
+    assert is_supported("https://youtu.be/ID") is True
+    assert is_supported("https://www.youtube.com/shorts/ID") is True
+    assert is_supported("https://www.youtube.com/live/ID") is True
+    assert is_supported("https://www.youtube.com/embed/ID") is False
+    assert is_supported("https://www.youtube.com/clip/ID") is False
+    assert is_supported("ID") is True

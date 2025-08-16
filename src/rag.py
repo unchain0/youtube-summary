@@ -8,204 +8,17 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:  # typing-only import to satisfy Ruff TCH rules
+if TYPE_CHECKING:
     from collections.abc import Callable
 
-# Optional imports with safe fallbacks for testing without heavy deps installed
-try:
-    from chromadb.config import (
-        Settings as ChromaSettings,  # type: ignore[import-not-found]
-    )
-except ImportError:
-    class ChromaSettings:  # type: ignore[no-redef]
-        """Stub for chromadb.config.Settings used only for construction."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize ChromaSettings stub."""
-            del args, kwargs
-
-try:
-    from langchain.chains import RetrievalQA  # type: ignore[import-not-found]
-except ImportError:
-    class RetrievalQA:  # type: ignore[no-redef]
-        """Minimal stub for RetrievalQA supporting .from_chain_type() and .invoke()."""
-
-        def __init__(self) -> None:
-            """Construct a trivial QA chain stub."""
-
-        @classmethod
-        def from_chain_type(
-            cls,
-            llm: object,
-            chain_type: str,
-            retriever: object,
-            *,
-            chain_type_kwargs: dict[str, object] | None = None,
-            return_source_documents: bool | None = None,
-        ) -> RetrievalQA:
-            """Return a new stub instance regardless of inputs."""
-            # Mark parameters as used to satisfy Ruff ARG002 while preserving signature
-            del llm, chain_type, retriever, chain_type_kwargs, return_source_documents
-            return cls()
-
-        def invoke(self, _inputs: dict[str, object]) -> dict[str, str]:
-            """Return an empty result string like a degenerate chain."""
-            return {"result": ""}
-
-try:
-    from langchain.prompts import ChatPromptTemplate  # type: ignore[import-not-found]
-except ImportError:
-    class ChatPromptTemplate:  # type: ignore[no-redef]
-        """Stub for ChatPromptTemplate exposing from_messages()."""
-
-        @classmethod
-        def from_messages(
-            cls,
-            _messages: list[tuple[str, str]],
-        ) -> ChatPromptTemplate:
-            """Return a trivial template stub."""
-            return cls()
-
-try:
-    from langchain.schema import Document  # type: ignore[import-not-found]
-except ImportError:
-    class Document:  # type: ignore[no-redef]
-        """Lightweight document object with content and metadata."""
-
-        def __init__(
-            self,
-            page_content: str,
-            metadata: dict[str, object] | None = None,
-        ) -> None:
-            """Initialize a document stub."""
-            self.page_content = page_content
-            self.metadata = metadata or {}
-
-try:
-    from langchain.text_splitter import (
-        RecursiveCharacterTextSplitter,  # type: ignore[import-not-found]
-    )
-except ImportError:
-    class RecursiveCharacterTextSplitter:  # type: ignore[no-redef]
-        """Simple text splitter that produces overlapping fixed-size chunks."""
-
-        def __init__(self, *, chunk_size: int = 1000, chunk_overlap: int = 50) -> None:
-            """Configure chunk size and overlap for the splitter."""
-            self.chunk_size = int(max(1, chunk_size))
-            self.chunk_overlap = int(max(0, min(chunk_overlap, self.chunk_size - 1)))
-
-        def split_documents(self, docs: list[Document]) -> list[Document]:
-            """Split each document into chunks preserving metadata."""
-            out: list[Document] = []
-            for doc in docs:
-                text = doc.page_content
-                start = 0
-                step = max(1, self.chunk_size - self.chunk_overlap)
-                while start < len(text):
-                    end = min(len(text), start + self.chunk_size)
-                    chunk = text[start:end]
-                    out.append(
-                        Document(
-                            page_content=chunk,
-                            metadata=dict(doc.metadata),
-                        ),
-                    )
-                    if end == len(text):
-                        break
-                    start += step
-            return out
-
-try:
-    from langchain_chroma import Chroma  # type: ignore[import-not-found]
-except ImportError:
-    class Chroma:  # type: ignore[no-redef]
-        """In-memory stand-in for Chroma with minimal surface used by tests."""
-
-        def __init__(
-            self,
-            embedding_function: object | None = None,
-            persist_directory: str | None = None,
-            collection_name: str | None = None,
-            client_settings: object | None = None,
-        ) -> None:
-            """Initialize in-memory Chroma stub."""
-            # Unused, but keep names compatible with real API/call sites
-            del embedding_function, client_settings
-            self._docs: list[Document] = []
-            self._ids: set[str] = set()
-            self.persist_directory = persist_directory
-            self.collection_name = collection_name
-
-        @classmethod
-        def from_documents(
-            cls,
-            documents: list[Document],
-            embedding: object,
-            persist_directory: str,
-            collection_name: str,
-        ) -> Chroma:
-            """Create a new collection initialized with provided documents."""
-            inst = cls(
-                embedding_function=embedding,
-                persist_directory=persist_directory,
-                collection_name=collection_name,
-            )
-            inst._docs.extend(documents)
-            return inst
-
-        def add_documents(
-            self,
-            documents: list[Document],
-            ids: list[str] | None = None,
-        ) -> None:
-            """Append documents and record optional IDs."""
-            self._docs.extend(documents)
-            if ids:
-                self._ids.update(ids)
-
-        def get(self, include: list[str] | None = None) -> dict[str, list[str]]:
-            """Return a dict-like view including existing IDs."""
-            del include
-            return {"ids": sorted(self._ids)}
-
-        def persist(self) -> None:
-            """No-op persist for stub implementation."""
-
-        def as_retriever(self, search_kwargs: dict[str, object]) -> object:
-            """Return a minimal retriever exposing invoke()."""
-
-            class _R:
-                def __init__(self, docs: list[Document]) -> None:
-                    self._docs = docs
-
-                def invoke(self, _q: object) -> list[Document]:
-                    k = int(search_kwargs.get("k", 4))
-                    return self._docs[:k]
-
-            return _R(self._docs)
-
-        def delete(self, *args: object, **kwargs: object) -> None:
-            """No-op delete in stub implementation."""
-
-try:
-    from langchain_groq import ChatGroq  # type: ignore[import-not-found]
-except ImportError:
-    class ChatGroq:  # type: ignore[no-redef]
-        """Stub for ChatGroq model class."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Construct a no-op model stub."""
-
-try:
-    from langchain_together.embeddings import (  # type: ignore[import-not-found]
-        TogetherEmbeddings,
-    )
-except ImportError:
-    class TogetherEmbeddings:  # type: ignore[no-redef]
-        """Stub for TogetherEmbeddings used in tests unless monkeypatched."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Construct a no-op embeddings stub."""
+from chromadb.config import Settings as ChromaSettings
+from langchain.chains import RetrievalQA
+from langchain.schema import Document
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_chroma.vectorstores import Chroma
+from langchain_core.prompts.chat import ChatPromptTemplate
+from langchain_groq import ChatGroq
+from langchain_together.embeddings import TogetherEmbeddings
 
 from src.exceptions import ModelInitializationError, VectorStoreAddError
 from src.utils.logging_setup import logger
@@ -244,26 +57,35 @@ class TranscriptRAG:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
-        self._embed_model_name = embed_model_name or os.getenv(
-            "TOGETHER_EMBEDDINGS_MODEL",
-            "intfloat/multilingual-e5-large-instruct",
+        name = (
+            embed_model_name
+            if embed_model_name is not None
+            else os.getenv(
+                "TOGETHER_EMBEDDINGS_MODEL",
+                "intfloat/multilingual-e5-large-instruct",
+            )
         )
+        # Ensure non-Optional
+        self._embed_model_name: str = str(name)
         # Instantiate Together embeddings
         self.embeddings = TogetherEmbeddings(model=self._embed_model_name)
         safe_model = self._embed_model_name.replace("-", "_").replace("/", "_")
         self.collection_name = f"transcripts_together_{safe_model}"
         self.db: Chroma | None = None
-        self.groq_model_name: str = groq_model or os.getenv(
-            "GROQ_MODEL",
-            "llama-3.3-70b-versatile",
+        gm = (
+            groq_model
+            if groq_model is not None
+            else os.getenv("GROQ_MODEL") or "llama-3.3-70b-versatile"
         )
+        self.groq_model_name: str = gm
         self.model: ChatGroq | None = None
         # Root directory for transcripts to compute stable relative paths
         self.transcripts_root: Path | None = None
         # Disable Chroma anonymized telemetry to avoid noisy logs and external calls
         self._chroma_settings = ChromaSettings(anonymized_telemetry=False)
 
-    def _system_prompt(self) -> str:
+    @staticmethod
+    def _system_prompt() -> str:
         """Return the system prompt for Groq RAG, optionally overridden by env.
 
         Env var: RAG_SYSTEM_PROMPT
@@ -287,7 +109,7 @@ class TranscriptRAG:
             "consistência com o que está nos trechos."
         )
 
-    def _build_chat_prompt(self) -> ChatPromptTemplate:
+    def _build_chat_prompt(self) -> object:
         """Compose a chat prompt with system instructions and placeholders.
 
         Works with RetrievalQA chain_type="stuff" expecting {context} and {question}.
@@ -321,7 +143,8 @@ class TranscriptRAG:
                 raise ModelInitializationError(msg) from err
         return self.model
 
-    def _generate_chunk_ids(self, chunks: list[Document]) -> list[str]:
+    @staticmethod
+    def _generate_chunk_ids(chunks: list[Document]) -> list[str]:
         """Generate deterministic IDs for each chunk to avoid duplicates.
 
         ID format: "{source}::{local_index}::{sha1_12(page_content)}"
@@ -359,7 +182,7 @@ class TranscriptRAG:
         added = 0
         if docs_to_add:
             try:
-                db.add_documents(docs_to_add, ids=ids_to_add)  # type: ignore[arg-type]
+                db.add_documents(docs_to_add, ids=ids_to_add)
                 added = len(docs_to_add)
             except Exception as e:
                 logger.warning(
@@ -381,7 +204,7 @@ class TranscriptRAG:
         skipped = len(chunks) - added
         if hasattr(db, "persist"):
             try:
-                db.persist()  # type: ignore[attr-defined]
+                db.persist()
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "Chroma persist() failed: {}: {}",
@@ -390,29 +213,30 @@ class TranscriptRAG:
                 )
         return added, skipped
 
-    def _existing_ids(self, db: Chroma) -> set[str]:
+    @staticmethod
+    def _existing_ids(db: Chroma) -> set[str]:
         """Return existing IDs from the Chroma collection, best-effort."""
         # Prefer public API if available
         if hasattr(db, "get"):
             try:
                 try:
-                    result = db.get(include=[])  # type: ignore[attr-defined]
+                    result = db.get(include=[])
                 except TypeError:
-                    result = db.get()  # type: ignore[attr-defined]
+                    result = db.get()
                 ids = result.get("ids") if isinstance(result, dict) else None
                 return set(ids or [])
             except Exception:  # noqa: BLE001
                 return set()
 
         # Fallback to underlying chromadb collection
-        collection = getattr(db, "_collection", None)
+        collection: object = getattr(db, "_collection", None)
         if collection is None or not hasattr(collection, "get"):
             return set()
         try:
             try:
-                result = collection.get(include=[])  # type: ignore[attr-defined]
+                result = collection.get(include=[])
             except TypeError:
-                result = collection.get()  # type: ignore[attr-defined]
+                result = collection.get()
             ids = result.get("ids") if isinstance(result, dict) else None
             return set(ids or [])
         except Exception:  # noqa: BLE001
@@ -533,7 +357,7 @@ class TranscriptRAG:
         # Persist at end
         if hasattr(self.db, "persist"):
             try:
-                self.db.persist()  # type: ignore[attr-defined]
+                self.db.persist()
             except Exception as e:  # noqa: BLE001
                 logger.warning("Chroma persist() failed: {}: {}", type(e).__name__, e)
 
@@ -642,10 +466,11 @@ class TranscriptRAG:
         # Try to fetch matching IDs using underlying collection when possible
         ids_to_delete: list[str] = []
         where = {"source": {"$contains": f"{channel_name}/"}}
+
         collection = getattr(db, "_collection", None)
         if collection is not None and hasattr(collection, "get"):
             try:
-                result = collection.get(where=where)  # type: ignore[attr-defined]
+                result = collection.get(where=where)
                 got = result.get("ids") if isinstance(result, dict) else None
                 if got:
                     ids_to_delete = list(got)
@@ -654,12 +479,12 @@ class TranscriptRAG:
         # If not collected, we still try a best-effort delete by where below
         try:
             # Prefer deleting by where if supported (will be ignored otherwise)
-            db.delete(where=where)  # type: ignore[arg-type]
+            db.delete(where=where)
         except Exception as err:  # noqa: BLE001
             # Fallback: delete by explicit ids if we managed to fetch any
             if ids_to_delete:
                 try:
-                    db.delete(ids=ids_to_delete)  # type: ignore[arg-type]
+                    db.delete(ids=ids_to_delete)
                 except Exception as err2:  # noqa: BLE001
                     logger.warning(
                         "Delete by ids failed: {}: {}",
@@ -724,7 +549,8 @@ class TranscriptRAG:
         sources: list[Document]
         if isinstance(result, dict):
             answer = str(result.get("result", ""))
-            sources = result.get("source_documents") or []  # type: ignore[assignment]
+            src = result.get("source_documents")
+            sources = list(src) if isinstance(src, list) else []
         else:
             answer = str(result)
             sources = []
