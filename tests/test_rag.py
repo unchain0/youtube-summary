@@ -1,8 +1,13 @@
 """Tests for RAG indexing and retrieval helpers."""
 
-from pathlib import Path
+from __future__ import annotations
 
-import pytest
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
 
 import src.rag as rag_mod
 
@@ -49,7 +54,7 @@ class FakeChroma:
         embedding: object,
         persist_directory: str,
         collection_name: str,
-    ) -> "FakeChroma":
+    ) -> FakeChroma:
         """Construct a FakeChroma from provided documents."""
         inst = cls(
             embedding_function=embedding,
@@ -95,7 +100,7 @@ def test_index_transcripts_empty_initializes_db(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """Indexing on empty directory initializes the vector DB and persists it."""
-    monkeypatch.setattr(rag_mod, "FastEmbedEmbeddings", FakeEmbeddings)
+    monkeypatch.setattr(rag_mod, "TogetherEmbeddings", FakeEmbeddings)
     monkeypatch.setattr(rag_mod, "Chroma", FakeChroma)
 
     transcripts_dir = tmp_path / "transcripts"
@@ -111,7 +116,7 @@ def test_add_channel_no_docs_ok(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """Adding a channel with no docs still initializes the DB."""
-    monkeypatch.setattr(rag_mod, "FastEmbedEmbeddings", FakeEmbeddings)
+    monkeypatch.setattr(rag_mod, "TogetherEmbeddings", FakeEmbeddings)
     monkeypatch.setattr(rag_mod, "Chroma", FakeChroma)
 
     r = rag_mod.TranscriptRAG(vector_dir=tmp_path / "vec")
@@ -128,7 +133,7 @@ def test_deduplicate_chunk_ids_across_runs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """Ensure repeated indexing doesn't create duplicate chunk IDs."""
-    monkeypatch.setattr(rag_mod, "FastEmbedEmbeddings", FakeEmbeddings)
+    monkeypatch.setattr(rag_mod, "TogetherEmbeddings", FakeEmbeddings)
     monkeypatch.setattr(rag_mod, "Chroma", FakeChroma)
 
     base = tmp_path / "transcripts"
