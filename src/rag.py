@@ -700,22 +700,11 @@ class TranscriptRAG:
             )
         return self.db
 
-    def query(self, question: str, k: int = 4, score_threshold: float = 0.7) -> str:
-        """Perform retrieval-augmented QA using RetrievalQA chain.
-
-        Args:
-            question: The question to answer.
-            k: Maximum number of documents to retrieve.
-            score_threshold: Minimum similarity score (0-1). Only documents with
-                score >= threshold are returned. Default 0.7.
-
-        """
+    def query(self, question: str, k: int = 4) -> str:
+        """Perform retrieval-augmented QA using RetrievalQA chain."""
         db = self._ensure_db()
         llm = self._ensure_model()
-        retriever = db.as_retriever(
-            search_type="similarity_score_threshold",
-            search_kwargs={"k": k, "score_threshold": score_threshold},
-        )
+        retriever = db.as_retriever(search_kwargs={"k": k})
         qa = RetrievalQA.from_chain_type(
             llm,
             chain_type="stuff",
@@ -731,26 +720,14 @@ class TranscriptRAG:
         self,
         question: str,
         k: int = 4,
-        score_threshold: float = 0.7,
     ) -> tuple[str, list[Document]]:
         """RAG QA returning both answer text and source documents.
 
-        Args:
-            question: The question to answer.
-            k: Maximum number of documents to retrieve.
-            score_threshold: Minimum similarity score (0-1). Only documents with
-                score >= threshold are returned. Default 0.7.
-
-        Returns:
-            A tuple of (answer, source_documents).
-
+        Returns a tuple of (answer, source_documents).
         """
         db = self._ensure_db()
         llm = self._ensure_model()
-        retriever = db.as_retriever(
-            search_type="similarity_score_threshold",
-            search_kwargs={"k": k, "score_threshold": score_threshold},
-        )
+        retriever = db.as_retriever(search_kwargs={"k": k})
         qa = RetrievalQA.from_chain_type(
             llm,
             chain_type="stuff",
