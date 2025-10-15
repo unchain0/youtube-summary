@@ -17,6 +17,7 @@ try:
         Settings as ChromaSettings,  # type: ignore[import-not-found]
     )
 except ImportError:
+
     class ChromaSettings:  # type: ignore[no-redef]
         """Stub for chromadb.config.Settings used only for construction."""
 
@@ -24,9 +25,11 @@ except ImportError:
             """Initialize ChromaSettings stub."""
             del args, kwargs
 
+
 try:
     from langchain.chains import RetrievalQA  # type: ignore[import-not-found]
 except ImportError:
+
     class RetrievalQA:  # type: ignore[no-redef]
         """Minimal stub for RetrievalQA supporting .from_chain_type() and .invoke()."""
 
@@ -52,9 +55,11 @@ except ImportError:
             """Return an empty result string like a degenerate chain."""
             return {"result": ""}
 
+
 try:
     from langchain.prompts import ChatPromptTemplate  # type: ignore[import-not-found]
 except ImportError:
+
     class ChatPromptTemplate:  # type: ignore[no-redef]
         """Stub for ChatPromptTemplate exposing from_messages()."""
 
@@ -66,9 +71,11 @@ except ImportError:
             """Return a trivial template stub."""
             return cls()
 
+
 try:
     from langchain.schema import Document  # type: ignore[import-not-found]
 except ImportError:
+
     class Document:  # type: ignore[no-redef]
         """Lightweight document object with content and metadata."""
 
@@ -81,11 +88,13 @@ except ImportError:
             self.page_content = page_content
             self.metadata = metadata or {}
 
+
 try:
     from langchain.text_splitter import (
         RecursiveCharacterTextSplitter,  # type: ignore[import-not-found]
     )
 except ImportError:
+
     class RecursiveCharacterTextSplitter:  # type: ignore[no-redef]
         """Simple text splitter that produces overlapping fixed-size chunks."""
 
@@ -115,9 +124,11 @@ except ImportError:
                     start += step
             return out
 
+
 try:
     from langchain_chroma import Chroma  # type: ignore[import-not-found]
 except ImportError:
+
     class Chroma:  # type: ignore[no-redef]
         """In-memory stand-in for Chroma with minimal surface used by tests."""
 
@@ -187,25 +198,30 @@ except ImportError:
         def delete(self, *args: object, **kwargs: object) -> None:
             """No-op delete in stub implementation."""
 
+
 try:
     from langchain_groq import ChatGroq  # type: ignore[import-not-found]
 except ImportError:
+
     class ChatGroq:  # type: ignore[no-redef]
         """Stub for ChatGroq model class."""
 
         def __init__(self, *args: object, **kwargs: object) -> None:
             """Construct a no-op model stub."""
 
+
 try:
     from langchain_together.embeddings import (  # type: ignore[import-not-found]
         TogetherEmbeddings,
     )
 except ImportError:
+
     class TogetherEmbeddings:  # type: ignore[no-redef]
         """Stub for TogetherEmbeddings used in tests unless monkeypatched."""
 
         def __init__(self, *args: object, **kwargs: object) -> None:
             """Construct a no-op embeddings stub."""
+
 
 from src.exceptions import ModelInitializationError, VectorStoreAddError
 from src.utils.logging_setup import logger
@@ -214,7 +230,7 @@ from src.utils.logging_setup import logger
 class TranscriptRAG:
     """Build a vector store from transcript files and provide QA.
 
-    - Embeddings: Together AI (default: intfloat/multilingual-e5-large-instruct;
+    - Embeddings: Together AI (default: togethercomputer/m2-bert-80M-32k-retrieval;
       override via TOGETHER_EMBEDDINGS_MODEL)
     - Vector store: Chroma (local, persisted under data/vector_store)
     - LLM: Groq chat model (configurable via env GROQ_MODEL; lazy-initialized)
@@ -223,8 +239,8 @@ class TranscriptRAG:
     def __init__(
         self,
         vector_dir: str | Path = "data/vector_store",
-        chunk_size: int = 1500,
-        chunk_overlap: int = 150,
+        chunk_size: int = 12000,
+        chunk_overlap: int = 1200,
         embed_model_name: str | None = None,
         groq_model: str | None = None,
     ) -> None:
@@ -246,7 +262,7 @@ class TranscriptRAG:
         )
         self._embed_model_name = embed_model_name or os.getenv(
             "TOGETHER_EMBEDDINGS_MODEL",
-            "intfloat/multilingual-e5-large-instruct",
+            "togethercomputer/m2-bert-80M-32k-retrieval",
         )
         # Instantiate Together embeddings
         self.embeddings = TogetherEmbeddings(model=self._embed_model_name)
@@ -255,7 +271,7 @@ class TranscriptRAG:
         self.db: Chroma | None = None
         self.groq_model_name: str = groq_model or os.getenv(
             "GROQ_MODEL",
-            "llama-3.3-70b-versatile",
+            "openai/gpt-oss-120b",
         )
         self.model: ChatGroq | None = None
         # Root directory for transcripts to compute stable relative paths
@@ -309,7 +325,7 @@ class TranscriptRAG:
     def _ensure_model(self) -> ChatGroq:
         if self.model is None:
             try:
-                self.model = ChatGroq(model=self.groq_model_name)
+                self.model = ChatGroq(model=self.groq_model_name, temperature=0)
             except Exception as err:
                 msg = (
                     "Failed to initialize Groq model. "
@@ -684,11 +700,22 @@ class TranscriptRAG:
             )
         return self.db
 
-    def query(self, question: str, k: int = 4) -> str:
-        """Perform retrieval-augmented QA using RetrievalQA chain."""
+    def query(self, question: str, k: int = 4, score_threshold: float = 0.7) -> str:
+        """Perform retrieval-augmented QA using RetrievalQA chain.
+
+        Args:
+            question: The question to answer.
+            k: Maximum number of documents to retrieve.
+            score_threshold: Minimum similarity score (0-1). Only documents with
+                score >= threshold are returned. Default 0.7.
+
+        """
         db = self._ensure_db()
         llm = self._ensure_model()
-        retriever = db.as_retriever(search_kwargs={"k": k})
+        retriever = db.as_retriever(
+            search_type="similarity_score_threshold",
+            search_kwargs={"k": k, "score_threshold": score_threshold},
+        )
         qa = RetrievalQA.from_chain_type(
             llm,
             chain_type="stuff",
@@ -704,14 +731,26 @@ class TranscriptRAG:
         self,
         question: str,
         k: int = 4,
+        score_threshold: float = 0.7,
     ) -> tuple[str, list[Document]]:
         """RAG QA returning both answer text and source documents.
 
-        Returns a tuple of (answer, source_documents).
+        Args:
+            question: The question to answer.
+            k: Maximum number of documents to retrieve.
+            score_threshold: Minimum similarity score (0-1). Only documents with
+                score >= threshold are returned. Default 0.7.
+
+        Returns:
+            A tuple of (answer, source_documents).
+
         """
         db = self._ensure_db()
         llm = self._ensure_model()
-        retriever = db.as_retriever(search_kwargs={"k": k})
+        retriever = db.as_retriever(
+            search_type="similarity_score_threshold",
+            search_kwargs={"k": k, "score_threshold": score_threshold},
+        )
         qa = RetrievalQA.from_chain_type(
             llm,
             chain_type="stuff",

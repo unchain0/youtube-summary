@@ -1,17 +1,17 @@
 # YouTube Summary – Transcript + RAG
 
-Busca transcrições de vídeos de canais do YouTube, indexa com embeddings locais (FastEmbed) e responde perguntas via modelo Groq (RAG). Projetado para Python 3.13, `uv`, `ruff`, `pytest`, `pyrefly`. Caminhos usando `pathlib.Path`.
+Busca transcrições de vídeos de canais do YouTube, indexa com embeddings da Together AI (M2-BERT-80M-32K) e responde perguntas via modelo Groq (RAG). Projetado para Python 3.13, `uv`, `ruff`, `pytest`, `pyrefly`. Caminhos usando `pathlib.Path`.
 
 ## Requisitos
 
 - Python 3.13
 - uv (gerenciador de pacotes)
 - Chaves de API em `.env`:
-  - `GROQ_API_KEY`
-  - `GROQ_MODEL` (opcional, padrão: `llama3-70b-8192`)
-  - `YT_PROXY_URL` (opcional, e.g. `http://host:port` ou `http://user:pass@host:port`)
-  - `YT_PROXY_USERNAME` (opcional, usado se não embutir user:pass em `YT_PROXY_URL`)
-  - `YT_PROXY_PASSWORD` (opcional, usado se não embutir user:pass em `YT_PROXY_URL`)
+  - `GROQ_API_KEY` - API key do Groq para o modelo de chat
+  - `GROQ_MODEL` (opcional, padrão: `openai/gpt-oss-120b`)
+  - `TOGETHER_API_KEY` - API key da Together AI para embeddings
+  - `TOGETHER_EMBEDDINGS_MODEL` (opcional, padrão: `togethercomputer/m2-bert-80M-32k-retrieval`)
+  - `HTTP_URL` (opcional, proxy para YouTube/yt-dlp, e.g. `http://user:pass@host:port`)
 - `yt-dlp` (instalado como dependência Python)
 
 ## Instalação
@@ -28,6 +28,7 @@ Configurar variáveis de ambiente
 
 ```bash
 GROQ_API_KEY=...
+TOGETHER_API_KEY=...
 # Proxy (opcional)
 HTTP_URL=http://proxy.myisp.com:3128
 ```
@@ -37,7 +38,7 @@ HTTP_URL=http://proxy.myisp.com:3128
 - `src/youtube.py`
   - Classe `YouTubeTranscriptManager` para extrair URLs e salvar transcrições em `data/transcripts/<canal>/<video_id>.txt`.
 - `src/rag.py`
-  - Classe `TranscriptRAG` para indexar (Chroma) e consultar (Groq + FastEmbed).
+  - Classe `TranscriptRAG` para indexar (Chroma) e consultar (Groq + Together AI embeddings).
 - `main.py`
   - CLI com todos os comandos do fluxo (buscar, indexar, consultar).
 - `data/transcripts/`
@@ -122,7 +123,7 @@ python main.py https://www.youtube.com/@Handle --limit 5 \
 - `YouTubeTranscriptManager.get_video_urls_from_channel()` usa `yt-dlp` para listar URLs e ignora vídeos com disponibilidade restrita (privado/membros), quando detectável via `availability`.
 - `YouTubeTranscriptManager.fetch_transcript()` usa `youtube-transcript-api` e tenta idiomas em ordem (`pt`, `en`). Caso indisponível, com `--subs` tenta baixar legendas (VTT/SRT).
 - Transcrições são salvas em `data/transcripts/<canal>/<video_id>.txt`.
-- `TranscriptRAG.index_transcripts()` lê `.txt`, quebra em chunks, embeda com FastEmbed e persiste no `Chroma`.
+- `TranscriptRAG.index_transcripts()` lê `.txt`, quebra em chunks de 12.000 caracteres (contexto longo do M2-BERT-32K), embeda com Together AI e persiste no `Chroma`.
 - `TranscriptRAG.as_chain()` cria a cadeia com Groq (modelo definido por `GROQ_MODEL`, padrão `llama3-70b-8192`) e o prompt em PT-BR.
 - `TranscriptRAG.query()` executa a pergunta no pipeline e retorna a resposta.
 
@@ -135,7 +136,9 @@ python main.py https://www.youtube.com/@Handle --limit 5 \
 - Imports LangChain/Groq
   - Dependências incluem `langchain-openai`, `langchain-community`, `langchain-groq`, `chromadb`.
 - Chroma: erro de dimensão/coleção
-  - O projeto agora usa `collection_name` atrelado ao modelo de embedding para evitar conflitos. Se você trocou de embedding/modelo e ocorrer erro ao adicionar documentos, rode com `--rebuild` para recriar o índice ou apague `data/vector_store/` manualmente.
+  - O projeto usa `collection_name` atrelado ao modelo de embedding (M2-BERT gera embeddings de dimensão 768). Se você trocar de modelo e ocorrer erro ao adicionar documentos, recrie o índice pela interface web ou apague `data/vector_store/` manualmente.
+- M2-BERT-80M-32K-Retrieval
+  - Suporta contexto de até 32.768 tokens (~130K caracteres), permitindo chunks muito maiores que modelos tradicionais. Ideal para transcrições longas de vídeos.
 
 ## Proxies (reduce 429 / IP bans)
 
