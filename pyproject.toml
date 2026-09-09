@@ -6,20 +6,20 @@ readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "langchain[together]>=0.3.27",
-    "python-dotenv>=1.1.0",
+    "python-dotenv>=1.2.2",
     "youtube-transcript-api>=1.2.2",
-    "yt-dlp>=2025.7.21",
+    "yt-dlp>=2026.7.4",
     "langchain-community>=0.3.7",
-    "chromadb>=0.5.5",
+    "chromadb>=1.5.9",
     "langchain-groq>=0.3.7",
     "loguru>=0.7.3",
     "langchain-chroma>=0.2.5",
-    "streamlit>=1.48.0",
+    "streamlit>=1.53.1",
     "together>=1.5.24",
 ]
 
 [dependency-groups]
-dev = ["pre-commit>=4.2.0", "ruff>=0.11.5", "pytest>=8.3.2", "mypy>=1.17.1"]
+dev = ["pre-commit>=4.2.0", "ruff>=0.11.5", "pytest>=9.1.1", "mypy>=1.17.1"]
 
 [tool.ruff.lint]
 select = ["ALL"]
