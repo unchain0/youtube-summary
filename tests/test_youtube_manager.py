@@ -168,7 +168,7 @@ def test_fetch_transcript_transcripts_disabled_with_fallback(
             msg_disabled = "disabled"
             raise TranscriptsDisabled(msg_disabled)
 
-    monkeypatch.setattr(yt, "_create_ytt_api", lambda: FakeApi())
+    monkeypatch.setattr(yt, "_create_ytt_api", FakeApi)
     # Force subtitle fallback path to return some text
     monkeypatch.setattr(
         ymod,
@@ -196,7 +196,7 @@ def test_fetch_transcript_transcripts_disabled_without_fallback(
             msg_disabled = "disabled"
             raise TranscriptsDisabled(msg_disabled)
 
-    monkeypatch.setattr(yt, "_create_ytt_api", lambda: FakeApi())
+    monkeypatch.setattr(yt, "_create_ytt_api", FakeApi)
     with pytest.raises(SkipVideoError) as ei:
         yt.fetch_transcript(
             "https://youtu.be/abc",
@@ -250,7 +250,7 @@ def test_fetch_entries_no_transcript_found_with_fallback(
         def list(self, _vid: str) -> FakeList:
             return FakeList()
 
-    monkeypatch.setattr(yt, "_create_ytt_api", lambda: FakeApi())
+    monkeypatch.setattr(yt, "_create_ytt_api", FakeApi)
     monkeypatch.setattr(ymod, "_download_subs", lambda _url, _languages=None: "subs")
     assert yt.fetch_transcript("https://youtu.be/abc", use_subs_fallback=True) == "subs"
 
@@ -299,7 +299,7 @@ def test_fetch_entries_no_transcript_found_without_fallback(
         def list(self, _vid: str) -> FakeList:
             return FakeList()
 
-    monkeypatch.setattr(yt, "_create_ytt_api", lambda: FakeApi())
+    monkeypatch.setattr(yt, "_create_ytt_api", FakeApi)
     with pytest.raises(RuntimeError):
         yt.fetch_transcript("https://youtu.be/abc", use_subs_fallback=False)
 
@@ -347,7 +347,7 @@ def test_select_transcript_order_and_assemble(
         def list(self, _vid: str) -> FakeList:
             return FakeList()
 
-    monkeypatch.setattr(yt, "_create_ytt_api", lambda: FakeApi())
+    monkeypatch.setattr(yt, "_create_ytt_api", FakeApi)
     assert (
         yt.fetch_transcript("https://youtu.be/abc", use_subs_fallback=False)
         == "hello world"
