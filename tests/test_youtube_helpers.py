@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for utils.youtube_helpers."""
 
 from __future__ import annotations

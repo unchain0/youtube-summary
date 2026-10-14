@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for `YouTubeTranscriptManager` helpers and I/O."""
 
 from __future__ import annotations
