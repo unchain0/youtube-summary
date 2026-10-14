@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Tests for RAG indexing and retrieval helpers."""
 
 from __future__ import annotations

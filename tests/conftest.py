@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Pytest configuration to ensure src-layout imports work in tests.
 
 Adds the project root and the `src/` directory to `sys.path` so modules can be
